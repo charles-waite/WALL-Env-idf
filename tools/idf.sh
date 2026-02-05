@@ -10,7 +10,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export IDF_CCACHE_ENABLE="${IDF_CCACHE_ENABLE:-1}"
 
 source "$HOME/esp-idf/export.sh"
-source "${ROOT_DIR}/esp-matter/export.sh"
+
+# esp-matter/export.sh expects ESP_MATTER_PATH to be set (it errors under `set -u`).
+export ESP_MATTER_PATH="${ESP_MATTER_PATH:-${ROOT_DIR}/esp-matter}"
+source "${ESP_MATTER_PATH}/export.sh"
 
 exec idf.py -C "${ROOT_DIR}" "$@"
-
