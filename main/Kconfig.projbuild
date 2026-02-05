@@ -1,0 +1,27 @@
+menu "Example Configuration"
+
+    config SHTC3_I2C_SDA_PIN
+        int "I2C SDA Pin"
+        default 22
+        help
+            GPIO number for I2C master data
+
+    config SHTC3_I2C_SCL_PIN
+        int "I2C SCL Pin"
+        default 23
+        help
+            GPIO number for I2C master clock
+
+    config I2C_MASTER_FREQ_HZ
+        int "I2C Master Frequency (Hz)"
+        default 400000
+        help
+            I2C bus clock frequency
+
+    config PIR_DATA_PIN
+        int "PIR Data Pin"
+        default 7
+        help
+            Default PIR Data Pin
+
+endmenu

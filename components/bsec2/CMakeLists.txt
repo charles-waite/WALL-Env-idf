@@ -5,15 +5,7 @@ idf_component_register(
     "src"
     "src/inc"
   REQUIRES
-    arduino-esp32
     BME68x_Sensor_library
-)
-
-# Ensure Arduino-flavored codepaths compile (provides begin(..., delayCb) etc.)
-target_compile_definitions(${COMPONENT_LIB} PUBLIC
-  ARDUINO=1
-  ESP32=1
-  ARDUINO_ARCH_ESP32=1
 )
 
 # Link the prebuilt Bosch algorithm library for the current target
