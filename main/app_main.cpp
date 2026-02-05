@@ -20,8 +20,7 @@
 #include <common_macros.h>
 
 // drivers implemented by this example
-#include <drivers/shtc3.h>
-#include <drivers/pir.h>
+#include <drivers/bsec2_app.h>
 
 static const char *TAG = "app_main";
 
@@ -29,60 +28,6 @@ using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
 using namespace chip::app::Clusters;
-
-// Application cluster specification, 7.18.2.11. Temperature
-// represents a temperature on the Celsius scale with a resolution of 0.01°C.
-// temp = (temperature in °C) x 100
-static void temp_sensor_notification(uint16_t endpoint_id, float temp, void *user_data)
-{
-    // schedule the attribute update so that we can report it from matter thread
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, temp]() {
-        attribute_t * attribute = attribute::get(endpoint_id,
-                                                 TemperatureMeasurement::Id,
-                                                 TemperatureMeasurement::Attributes::MeasuredValue::Id);
-
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.i16 = static_cast<int16_t>(temp * 100);
-
-        attribute::update(endpoint_id, TemperatureMeasurement::Id, TemperatureMeasurement::Attributes::MeasuredValue::Id, &val);
-    });
-}
-
-// Application cluster specification, 2.6.4.1. MeasuredValue Attribute
-// represents the humidity in percent.
-// humidity = (humidity in %) x 100
-static void humidity_sensor_notification(uint16_t endpoint_id, float humidity, void *user_data)
-{
-    // schedule the attribute update so that we can report it from matter thread
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, humidity]() {
-        attribute_t * attribute = attribute::get(endpoint_id,
-                                                 RelativeHumidityMeasurement::Id,
-                                                 RelativeHumidityMeasurement::Attributes::MeasuredValue::Id);
-
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.u16 = static_cast<uint16_t>(humidity * 100);
-
-        attribute::update(endpoint_id, RelativeHumidityMeasurement::Id, RelativeHumidityMeasurement::Attributes::MeasuredValue::Id, &val);
-    });
-}
-
-static void occupancy_sensor_notification(uint16_t endpoint_id, bool occupancy, void *user_data)
-{
-    // schedule the attribute update so that we can report it from matter thread
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([endpoint_id, occupancy]() {
-        attribute_t * attribute = attribute::get(endpoint_id,
-                                                 OccupancySensing::Id,
-                                                 OccupancySensing::Attributes::Occupancy::Id);
-
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.b = occupancy;
-
-        attribute::update(endpoint_id, OccupancySensing::Id, OccupancySensing::Attributes::Occupancy::Id, &val);
-    });
-}
 
 static esp_err_t factory_reset_button_register()
 {
@@ -177,37 +122,35 @@ extern "C" void app_main()
     endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
     ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
 
-    // initialize temperature and humidity sensor driver (shtc3)
-    static shtc3_sensor_config_t shtc3_config = {
-        .temperature = {
-            .cb = temp_sensor_notification,
-            .endpoint_id = endpoint::get_id(temp_sensor_ep),
-        },
-        .humidity = {
-            .cb = humidity_sensor_notification,
-            .endpoint_id = endpoint::get_id(humidity_sensor_ep),
-        },
+    // add the pressure sensor device
+    pressure_sensor::config_t pressure_sensor_config;
+    endpoint_t * pressure_sensor_ep = pressure_sensor::create(node, &pressure_sensor_config, ENDPOINT_FLAG_NONE, NULL);
+    ABORT_APP_ON_FAILURE(pressure_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure_sensor endpoint"));
+
+    // add the air quality sensor device
+    air_quality_sensor::config_t air_quality_config;
+    endpoint_t * air_quality_ep = air_quality_sensor::create(node, &air_quality_config, ENDPOINT_FLAG_NONE, NULL);
+    ABORT_APP_ON_FAILURE(air_quality_ep != nullptr, ESP_LOGE(TAG, "Failed to create air_quality_sensor endpoint"));
+
+    // add CO2 concentration measurement cluster to air quality endpoint
+    cluster::carbon_dioxide_concentration_measurement::config_t co2_config;
+    co2_config.measurement_medium =
+        static_cast<uint8_t>(chip::app::Clusters::detail::MeasurementMediumEnum::kAir);
+    co2_config.feature_flags = cluster::concentration_measurement::feature::numeric_measurement::get_id();
+    co2_config.features.numeric_measurement.measurement_unit =
+        static_cast<uint8_t>(chip::app::Clusters::detail::MeasurementUnitEnum::kPpm);
+    cluster::carbon_dioxide_concentration_measurement::create(air_quality_ep, &co2_config, CLUSTER_FLAG_SERVER);
+
+    // start BSEC2 processing loop
+    bsec2_app_config_t bsec_cfg = {
+        .temp_endpoint = endpoint::get_id(temp_sensor_ep),
+        .humidity_endpoint = endpoint::get_id(humidity_sensor_ep),
+        .pressure_endpoint = endpoint::get_id(pressure_sensor_ep),
+        .air_quality_endpoint = endpoint::get_id(air_quality_ep),
+        .co2_endpoint = endpoint::get_id(air_quality_ep),
     };
-    err = shtc3_sensor_init(&shtc3_config);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize temperature sensor driver"));
-
-    // add the occupancy sensor
-    occupancy_sensor::config_t occupancy_sensor_config;
-    occupancy_sensor_config.occupancy_sensing.occupancy_sensor_type =
-        chip::to_underlying(OccupancySensing::OccupancySensorTypeEnum::kPir);
-    occupancy_sensor_config.occupancy_sensing.occupancy_sensor_type_bitmap =
-        chip::to_underlying(OccupancySensing::OccupancySensorTypeBitmap::kPir);
-
-    endpoint_t * occupancy_sensor_ep = occupancy_sensor::create(node, &occupancy_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(occupancy_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create occupancy_sensor endpoint"));
-
-    // initialize occupancy sensor driver (pir)
-    static pir_sensor_config_t pir_config = {
-        .cb = occupancy_sensor_notification,
-        .endpoint_id = endpoint::get_id(occupancy_sensor_ep),
-    };
-    err = pir_sensor_init(&pir_config);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize occupancy sensor driver"));
+    err = bsec2_app_start(&bsec_cfg);
+    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     /* Set OpenThread platform config */

@@ -18,6 +18,12 @@ menu "Example Configuration"
         help
             I2C bus clock frequency
 
+    config BME68X_I2C_ADDR
+        hex "BME68x I2C Address"
+        default 0x77
+        help
+            I2C address for the BME68x sensor (0x76 or 0x77)
+
     config PIR_DATA_PIN
         int "PIR Data Pin"
         default 7

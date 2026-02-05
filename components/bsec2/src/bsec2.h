@@ -207,7 +207,7 @@ public:
      * @param state			: Pointer to a memory location that contains the configuration
      * @return	true for success, false otherwise
      */
-    bool setConfig(const uint8_t *config);
+    bool setConfig(const uint8_t *config, uint32_t config_len);
 
     /**
      * @brief Function to set the temperature offset

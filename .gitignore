@@ -13,3 +13,7 @@ CMakeUserPresets.json
 .DS_Store
 build/*
 managed_components/*
+.vscode/
+main_prev/
+*.prev
+sdkconfig.old
