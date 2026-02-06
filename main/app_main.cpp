@@ -17,12 +17,15 @@
 #include <app_reset.h>
 #include <common_macros.h>
 #include <esp_matter.h>
+#include <esp_matter_identify.h>
 
 // drivers implemented by this example
 #include <drivers/bsec2_app.h>
 #include <drivers/oled_sh1106.h>
 
 static const char *TAG = "app_main";
+
+extern "C" void init_network_driver();
 
 static esp_err_t factory_reset_button_register()
 {
@@ -104,6 +107,13 @@ extern "C" void app_main()
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+
+    // Initialize network commissioning driver(s) for the ZAP-defined Network Commissioning cluster(s).
+    init_network_driver();
+
+    // ZAP defines Identify on endpoint 1; initialize identification helpers.
+    esp_matter::identification::init(kEnvEndpointId, 0);
+    esp_matter::identification::set_callback(nullptr);
 
     // Start BSEC2 processing loop (updates ZAP-defined clusters on endpoint 1).
     bsec2_app_config_t bsec_cfg = {
