@@ -37,6 +37,14 @@ menu "Example Configuration"
         help
             I2C address for the SSD1306 OLED (commonly 0x3C or 0x3D)
 
+    config WALL_ENV_OLED_COL_OFFSET
+        int "OLED column offset"
+        depends on WALL_ENV_OLED_ENABLE
+        default 2
+        help
+            SH1106-based 128x64 panels commonly map the visible area starting at column 2
+            (132-column internal RAM). Leave at 2 unless your panel is shifted.
+
     config WALL_ENV_OLED_WIDTH
         int "OLED width (px)"
         depends on WALL_ENV_OLED_ENABLE

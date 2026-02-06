@@ -10,10 +10,9 @@
 
 #include <esp_err.h>
 
-// Start an OLED task (SSD1306 over I2C) that shows a splash screen, then
+// Start an OLED task (SH1106 over I2C) that shows a splash screen, then
 // periodically updates with latest sensor values (if available).
 //
 // Safe to call even if OLED isn't present on the bus; errors are logged and
 // the app continues.
 esp_err_t oled_ssd1306_start();
-

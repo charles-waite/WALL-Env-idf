@@ -34,8 +34,10 @@ static constexpr uint8_t kI2cCtrlData = 0x40;
 static constexpr int kWidth = CONFIG_WALL_ENV_OLED_WIDTH;
 static constexpr int kHeight = CONFIG_WALL_ENV_OLED_HEIGHT;
 static constexpr int kPages = kHeight / 8;
-static_assert(kWidth == 128, "Only 128px wide SSD1306 panels are supported right now");
-static_assert(kHeight == 64, "Only 64px tall SSD1306 panels are supported right now");
+static_assert(kWidth == 128, "Only 128px wide OLED panels are supported right now");
+static_assert(kHeight == 64, "Only 64px tall OLED panels are supported right now");
+
+static constexpr uint8_t kColOffset = static_cast<uint8_t>(CONFIG_WALL_ENV_OLED_COL_OFFSET);
 
 static i2c_master_dev_handle_t s_dev = nullptr;
 static TaskHandle_t s_task = nullptr;
@@ -241,19 +243,13 @@ static void fb_draw_text_centered(int y, const char *s, int scale)
 
 static esp_err_t flush_fb()
 {
-    // Set addressing mode: horizontal
-    const uint8_t set_horiz[] = {0x20, 0x00};
-    esp_err_t err = send_cmds(set_horiz, sizeof(set_horiz));
-    if (err != ESP_OK) {
-        return err;
-    }
-
+    esp_err_t err;
     for (int page = 0; page < kPages; page++) {
         // Set page + column address to 0
         const uint8_t page_cmds[] = {
             static_cast<uint8_t>(0xB0 | page),
-            0x00, // low col
-            0x10, // high col
+            static_cast<uint8_t>(0x00 | (kColOffset & 0x0F)),         // low col (SH1106 often needs +2)
+            static_cast<uint8_t>(0x10 | ((kColOffset >> 4) & 0x0F)),  // high col
         };
         err = send_cmds(page_cmds, sizeof(page_cmds));
         if (err != ESP_OK) {
@@ -277,24 +273,25 @@ static esp_err_t flush_fb()
     return ESP_OK;
 }
 
-static esp_err_t ssd1306_init()
+static esp_err_t sh1106_init()
 {
     const uint8_t init_cmds[] = {
+        // SH1106 init (page addressing + 132-col internal RAM).
         0xAE,       // display off
-        0xD5, 0x80, // clock divide
-        0xA8, 0x3F, // multiplex 1/64
+        0xD5, 0x80, // display clock divide ratio/oscillator
+        0xA8, 0x3F, // multiplex ratio (1/64)
         0xD3, 0x00, // display offset
-        0x40,       // start line 0
-        0x8D, 0x14, // charge pump on
-        0x20, 0x00, // horiz addressing
+        0x40,       // display start line = 0
+        0xAD, 0x8B, // DC-DC control: ON (common on I2C modules)
         0xA1,       // segment remap
-        0xC8,       // COM scan dec
-        0xDA, 0x12, // COM pins
-        0x81, 0xCF, // contrast
-        0xD9, 0xF1, // pre-charge
-        0xDB, 0x40, // vcom detect
-        0xA4,       // resume RAM
-        0xA6,       // normal display
+        0xC8,       // COM scan direction: remapped mode
+        0xDA, 0x12, // COM pins hardware configuration
+        0x81, 0x7F, // contrast
+        0xD9, 0x22, // pre-charge period
+        0xDB, 0x20, // VCOM deselect level
+        0x20, 0x02, // memory addressing mode: page addressing
+        0xA4,       // entire display ON from RAM
+        0xA6,       // normal (not inverted)
         0xAF,       // display on
     };
 
@@ -374,9 +371,9 @@ static void oled_task(void *arg)
         return;
     }
 
-    err = ssd1306_init();
+    err = sh1106_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SSD1306 init failed: %d", err);
+        ESP_LOGE(TAG, "SH1106 init failed: %d", err);
         vTaskDelete(nullptr);
         return;
     }
@@ -410,4 +407,3 @@ esp_err_t oled_ssd1306_start()
 }
 
 #endif // CONFIG_WALL_ENV_OLED_ENABLE
-
