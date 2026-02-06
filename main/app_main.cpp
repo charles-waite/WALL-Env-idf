@@ -11,24 +11,18 @@
 #include <bsp/esp-bsp.h>
 #include <esp_err.h>
 #include <esp_log.h>
-#include <esp_matter.h>
-#include <esp_matter_ota.h>
 #include <nvs_flash.h>
 
 #include <app_openthread_config.h>
 #include <app_reset.h>
 #include <common_macros.h>
+#include <esp_matter.h>
 
 // drivers implemented by this example
 #include <drivers/bsec2_app.h>
 #include <drivers/oled_sh1106.h>
 
 static const char *TAG = "app_main";
-
-using namespace esp_matter;
-using namespace esp_matter::attribute;
-using namespace esp_matter::endpoint;
-using namespace chip::app::Clusters;
 
 static esp_err_t factory_reset_button_register()
 {
@@ -79,28 +73,14 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     }
 }
 
-// This callback is invoked when clients interact with the Identify Cluster.
-// In the callback implementation, an endpoint can identify itself. (e.g., by flashing an LED or light).
-static esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
-                                       uint8_t effect_variant, void *priv_data)
-{
-    ESP_LOGI(TAG, "Identification callback: type: %u, effect: %u, variant: %u", type, effect_id, effect_variant);
-    return ESP_OK;
-}
-
-// This callback is called for every attribute update. The callback implementation shall
-// handle the desired attributes and return an appropriate error code. If the attribute
-// is not of your interest, please do not return an error code and strictly return ESP_OK.
-static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id, uint32_t cluster_id,
-                                         uint32_t attribute_id, esp_matter_attr_val_t *val, void *priv_data)
-{
-    // Since this is just a sensor and we don't expect any writes on our temperature sensor,
-    // so, return success.
-    return ESP_OK;
-}
-
 extern "C" void app_main()
 {
+    // In this app we use the ZAP-generated data model (single endpoint) and do not
+    // create endpoints dynamically at runtime.
+    //
+    // Endpoint id 1 is defined in `main/zap-generated/endpoint_config.h`.
+    static constexpr uint16_t kEnvEndpointId = 1;
+
     /* Initialize the ESP NVS layer */
     nvs_flash_init();
 
@@ -108,53 +88,8 @@ extern "C" void app_main()
     esp_err_t err = factory_reset_button_register();
     ABORT_APP_ON_FAILURE(ESP_OK == err, ESP_LOGE(TAG, "Failed to initialize reset button, err:%d", err));
 
-    /* Create a Matter node and add the mandatory Root Node device type on endpoint 0 */
-    node::config_t node_config;
-    node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
-    ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
-
     // Optional OLED splash/status task (does not abort app on failure).
     (void) oled_sh1106_start();
-
-    // add temperature sensor device
-    temperature_sensor::config_t temp_sensor_config;
-    endpoint_t * temp_sensor_ep = temperature_sensor::create(node, &temp_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(temp_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
-
-    // add the humidity sensor device
-    humidity_sensor::config_t humidity_sensor_config;
-    endpoint_t * humidity_sensor_ep = humidity_sensor::create(node, &humidity_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(humidity_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
-
-    // add the pressure sensor device
-    pressure_sensor::config_t pressure_sensor_config;
-    endpoint_t * pressure_sensor_ep = pressure_sensor::create(node, &pressure_sensor_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(pressure_sensor_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure_sensor endpoint"));
-
-    // add the air quality sensor device
-    air_quality_sensor::config_t air_quality_config;
-    endpoint_t * air_quality_ep = air_quality_sensor::create(node, &air_quality_config, ENDPOINT_FLAG_NONE, NULL);
-    ABORT_APP_ON_FAILURE(air_quality_ep != nullptr, ESP_LOGE(TAG, "Failed to create air_quality_sensor endpoint"));
-
-    // add CO2 concentration measurement cluster to air quality endpoint
-    cluster::carbon_dioxide_concentration_measurement::config_t co2_config;
-    co2_config.measurement_medium =
-        static_cast<uint8_t>(chip::app::Clusters::detail::MeasurementMediumEnum::kAir);
-    co2_config.feature_flags = cluster::concentration_measurement::feature::numeric_measurement::get_id();
-    co2_config.features.numeric_measurement.measurement_unit =
-        static_cast<uint8_t>(chip::app::Clusters::detail::MeasurementUnitEnum::kPpm);
-    cluster::carbon_dioxide_concentration_measurement::create(air_quality_ep, &co2_config, CLUSTER_FLAG_SERVER);
-
-    // start BSEC2 processing loop
-    bsec2_app_config_t bsec_cfg = {
-        .temp_endpoint = endpoint::get_id(temp_sensor_ep),
-        .humidity_endpoint = endpoint::get_id(humidity_sensor_ep),
-        .pressure_endpoint = endpoint::get_id(pressure_sensor_ep),
-        .air_quality_endpoint = endpoint::get_id(air_quality_ep),
-        .co2_endpoint = endpoint::get_id(air_quality_ep),
-    };
-    err = bsec2_app_start(&bsec_cfg);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     /* Set OpenThread platform config */
@@ -169,4 +104,15 @@ extern "C" void app_main()
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+
+    // Start BSEC2 processing loop (updates ZAP-defined clusters on endpoint 1).
+    bsec2_app_config_t bsec_cfg = {
+        .temp_endpoint = kEnvEndpointId,
+        .humidity_endpoint = kEnvEndpointId,
+        .pressure_endpoint = kEnvEndpointId,
+        .air_quality_endpoint = kEnvEndpointId,
+        .co2_endpoint = kEnvEndpointId,
+    };
+    err = bsec2_app_start(&bsec_cfg);
+    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
 }
