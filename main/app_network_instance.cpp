@@ -13,24 +13,11 @@
 #include <freertos/task.h>
 #include <mdns.h>
 
-#include <app/clusters/network-commissioning/network-commissioning.h>
 #include <esp_openthread_netif_glue.h>
-#include <platform/OpenThread/GenericNetworkCommissioningThreadDriver.h>
-
-// This mirrors the pattern used in esp-matter ZAP examples: initialize the
-// network commissioning driver instance(s) after Matter starts.
-
-using namespace chip;
-using namespace chip::DeviceLayer;
 
 static const char *TAG = "netif";
 
 namespace {
-
-#if CHIP_DEVICE_CONFIG_ENABLE_THREAD && CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER
-app::Clusters::NetworkCommissioning::InstanceAndDriver<NetworkCommissioning::GenericThreadDriver>
-sThreadNetworkDriver(CONFIG_THREAD_NETWORK_ENDPOINT_ID);
-#endif
 
 static void mdns_thread_netif_register_task(void *arg)
 {
@@ -68,10 +55,6 @@ static void mdns_thread_netif_register_task(void *arg)
 
 extern "C" void init_network_driver()
 {
-#if CHIP_DEVICE_CONFIG_ENABLE_THREAD && CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER
-    sThreadNetworkDriver.Init();
-#endif
-
     // With Wi‑Fi disabled, ensure mDNS is bound to the OpenThread netif so DNS-SD
     // advertising works during commissioning.
     (void) xTaskCreate(mdns_thread_netif_register_task, "mdns_ot", 3072, nullptr, 2, nullptr);
