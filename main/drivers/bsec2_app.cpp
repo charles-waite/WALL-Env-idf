@@ -10,6 +10,8 @@
 
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 
@@ -59,6 +61,31 @@ typedef struct {
 } bsec_latest_t;
 
 static bsec_latest_t s_latest;
+static portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
+
+bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
+{
+    if (!out_latest) {
+        return false;
+    }
+
+    portENTER_CRITICAL(&s_latest_mux);
+    const bsec_latest_t latest = s_latest;
+    portEXIT_CRITICAL(&s_latest_mux);
+
+    out_latest->have_temp = latest.have_temp;
+    out_latest->have_humidity = latest.have_humidity;
+    out_latest->have_pressure = latest.have_pressure;
+    out_latest->have_iaq = latest.have_iaq;
+    out_latest->have_co2 = latest.have_co2;
+    out_latest->temp_c = latest.temp_c;
+    out_latest->humidity_pct = latest.humidity_pct;
+    out_latest->pressure_hpa = latest.pressure_hpa;
+    out_latest->iaq = latest.static_iaq;
+    out_latest->iaq_accuracy = latest.iaq_accuracy;
+    out_latest->co2_ppm = latest.co2_ppm;
+    return true;
+}
 
 static unsigned long bsec_millis()
 {
@@ -194,29 +221,39 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
         const bsecData &out = outputs.output[i];
         switch (out.sensor_id) {
         case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE:
+            portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_temp = true;
             s_latest.temp_c = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
             update_temperature(out.signal);
             break;
         case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY:
+            portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_humidity = true;
             s_latest.humidity_pct = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
             update_humidity(out.signal);
             break;
         case BSEC_OUTPUT_RAW_PRESSURE:
+            portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_pressure = true;
             s_latest.pressure_hpa = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
             update_pressure(out.signal);
             break;
         case BSEC_OUTPUT_STATIC_IAQ:
+            portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_iaq = true;
             s_latest.static_iaq = out.signal;
             s_latest.iaq_accuracy = out.accuracy;
+            portEXIT_CRITICAL(&s_latest_mux);
             update_air_quality(out.signal, out.accuracy);
             break;
         case BSEC_OUTPUT_CO2_EQUIVALENT:
+            portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_co2 = true;
             s_latest.co2_ppm = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
             update_co2(out.signal);
             break;
         default:
@@ -228,9 +265,12 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
     const int64_t now_ms = esp_timer_get_time() / 1000;
     if ((now_ms - s_last_log_ms) >= 5000) {
         s_last_log_ms = now_ms;
+        portENTER_CRITICAL(&s_latest_mux);
+        const bsec_latest_t latest = s_latest;
+        portEXIT_CRITICAL(&s_latest_mux);
         ESP_LOGI(TAG, "BSEC: T=%.2fC RH=%.2f%% P=%.2fhPa IAQ=%.1f(acc=%u) CO2=%.0fppm",
-                 s_latest.temp_c, s_latest.humidity_pct, s_latest.pressure_hpa,
-                 s_latest.static_iaq, s_latest.iaq_accuracy, s_latest.co2_ppm);
+                 latest.temp_c, latest.humidity_pct, latest.pressure_hpa,
+                 latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm);
     }
 }
 

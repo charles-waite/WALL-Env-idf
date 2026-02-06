@@ -24,6 +24,40 @@ menu "Example Configuration"
         help
             I2C address for the BME68x sensor (0x76 or 0x77)
 
+    config WALL_ENV_OLED_ENABLE
+        bool "Enable SSD1306 OLED"
+        default y
+        help
+            Enable the SSD1306 OLED task (I2C) for splash/status output.
+
+    config WALL_ENV_OLED_I2C_ADDR
+        hex "OLED I2C Address"
+        depends on WALL_ENV_OLED_ENABLE
+        default 0x3C
+        help
+            I2C address for the SSD1306 OLED (commonly 0x3C or 0x3D)
+
+    config WALL_ENV_OLED_WIDTH
+        int "OLED width (px)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 128
+        help
+            SSD1306 panel width in pixels (only 128 supported currently).
+
+    config WALL_ENV_OLED_HEIGHT
+        int "OLED height (px)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 64
+        help
+            SSD1306 panel height in pixels (only 64 supported currently).
+
+    config WALL_ENV_OLED_SPLASH_MS
+        int "OLED splash duration (ms)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 5000
+        help
+            How long to display the splash screen on boot, in milliseconds.
+
     config PIR_DATA_PIN
         int "PIR Data Pin"
         default 7

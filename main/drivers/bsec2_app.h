@@ -9,6 +9,8 @@
 #pragma once
 
 #include <esp_err.h>
+#include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
     uint16_t temp_endpoint = 0;
@@ -18,4 +20,20 @@ typedef struct {
     uint16_t co2_endpoint = 0;
 } bsec2_app_config_t;
 
+typedef struct {
+    bool have_temp;
+    bool have_humidity;
+    bool have_pressure;
+    bool have_iaq;
+    bool have_co2;
+
+    float temp_c;
+    float humidity_pct;
+    float pressure_hpa;
+    float iaq;
+    uint8_t iaq_accuracy;
+    float co2_ppm;
+} bsec2_app_latest_t;
+
 esp_err_t bsec2_app_start(const bsec2_app_config_t *config);
+bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest);
