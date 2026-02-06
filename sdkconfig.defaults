@@ -34,8 +34,9 @@ CONFIG_BUTTON_LONG_PRESS_TIME_MS=5000
 # disable softap by default
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
 
-# Thread-only: disable Wi-Fi stack and Wi-Fi commissioning/diagnostics
-CONFIG_ESP_WIFI_ENABLED=n
+# Thread-only: disable Wi-Fi features (no STA/AP, no Wi-Fi commissioning/diagnostics).
+# Note: on ESP32-C6 the low-level Wi-Fi component may still be built/linked by IDF defaults,
+# but with the settings below it is not used by Matter.
 CONFIG_ENABLE_WIFI_STATION=n
 CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER=n
 CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER=y
