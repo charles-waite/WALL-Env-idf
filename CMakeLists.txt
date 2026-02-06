@@ -9,6 +9,12 @@ set(ENV{ESP_MATTER_PATH} "${ESP_MATTER_PATH}")
 set(MATTER_SDK_PATH "${ESP_MATTER_PATH}/connectedhomeip/connectedhomeip")
 set(ENV{MATTER_SDK_PATH} "${MATTER_SDK_PATH}")
 
+# This project is a Thread-only sensor (BLE commissioning + Thread transport).
+# Exclude esp-matter's RainMaker integration to avoid pulling in Wi-Fi/cloud stack pieces.
+set(EXCLUDE_COMPONENTS
+    esp_matter_rainmaker
+)
+
 # This should be done before using the IDF_TARGET variable.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 

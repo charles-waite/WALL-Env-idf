@@ -7,8 +7,10 @@
 */
 
 #include <cstring>
+#include <cmath>
 
 #include <esp_log.h>
+#include <esp_rom_sys.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
@@ -63,6 +65,30 @@ typedef struct {
 static bsec_latest_t s_latest;
 static portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
 
+static constexpr int64_t kMinPublishIntervalMs = 12000;
+static constexpr int16_t kTempDeltaCenti = 10;       // 0.10 C
+static constexpr uint16_t kHumidityDeltaCenti = 50;  // 0.50 %
+static constexpr int16_t kPressureDelta = 1;         // 1 hPa
+static constexpr float kCo2DeltaPpm = 10.0f;         // 10 ppm
+static constexpr float kBsecTemperatureOffsetC = 4.0f;
+
+typedef struct {
+    bool valid = false;
+    int64_t last_ms = 0;
+} publish_gate_t;
+
+static publish_gate_t s_temp_gate;
+static publish_gate_t s_humidity_gate;
+static publish_gate_t s_pressure_gate;
+static publish_gate_t s_air_quality_gate;
+static publish_gate_t s_co2_gate;
+
+static int16_t s_last_temp_c_x100 = 0;
+static uint16_t s_last_humidity_x100 = 0;
+static int16_t s_last_pressure_hpa = 0;
+static uint8_t s_last_air_quality_enum = 0xFF;
+static float s_last_co2_ppm = 0;
+
 bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
 {
     if (!out_latest) {
@@ -92,19 +118,35 @@ static unsigned long bsec_millis()
     return static_cast<unsigned long>(esp_timer_get_time() / 1000ULL);
 }
 
+static bool publish_gate_allows(publish_gate_t &gate, bool changed)
+{
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (!gate.valid) {
+        gate.valid = true;
+        gate.last_ms = now_ms;
+        return true;
+    }
+    if ((now_ms - gate.last_ms) < kMinPublishIntervalMs) {
+        return false;
+    }
+    gate.last_ms = now_ms;
+    // After interval expires, publish latest value even if unchanged to keep subscriptions fresh.
+    (void) changed;
+    return true;
+}
+
 static void delay_us(uint32_t period_us, void *intf_ptr)
 {
     (void) intf_ptr;
-    const uint64_t start = esp_timer_get_time();
-    const uint32_t lag_us = 5000;
-
-    if (period_us > lag_us) {
-        vTaskDelay(pdMS_TO_TICKS((period_us - lag_us) / 1000U));
-        while ((esp_timer_get_time() - start) < (period_us - lag_us)) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-        }
+    // Avoid long busy-wait loops here; they can starve CHIP/OpenThread tasks.
+    // Sleep coarse time via RTOS, then do a short ROM delay for the remainder.
+    const TickType_t whole_ms = pdMS_TO_TICKS(period_us / 1000U);
+    if (whole_ms > 0) {
+        vTaskDelay(whole_ms);
     }
-    while ((esp_timer_get_time() - start) < period_us) {
+    const uint32_t rem_us = period_us % 1000U;
+    if (rem_us > 0) {
+        esp_rom_delay_us(rem_us);
     }
 }
 
@@ -152,30 +194,58 @@ static int8_t i2c_read(uint8_t reg_addr, uint8_t *reg_data, uint32_t length, voi
 static void update_temperature(float temp_c)
 {
     const int16_t temp_c_x100 = static_cast<int16_t>(temp_c * 100.0f);
+    const bool changed = !s_temp_gate.valid || (std::abs(temp_c_x100 - s_last_temp_c_x100) >= kTempDeltaCenti);
+    if (!publish_gate_allows(s_temp_gate, changed)) {
+        return;
+    }
+    s_last_temp_c_x100 = temp_c_x100;
+
     chip::DeviceLayer::SystemLayer().ScheduleLambda([temp_c_x100]() {
-        esp_matter_attr_val_t val = esp_matter_int16(temp_c_x100);
-        attribute::update(s_cfg.temp_endpoint, TemperatureMeasurement::Id,
-                          TemperatureMeasurement::Attributes::MeasuredValue::Id, &val);
+        esp_matter_attr_val_t val = esp_matter_nullable_int16(temp_c_x100);
+        esp_err_t err = attribute::update(s_cfg.temp_endpoint, TemperatureMeasurement::Id,
+                                          TemperatureMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Temperature update failed: %d", err);
+        }
     });
 }
 
 static void update_humidity(float humidity_pct)
 {
     const uint16_t humidity_x100 = static_cast<uint16_t>(humidity_pct * 100.0f);
+    const bool changed = !s_humidity_gate.valid ||
+                         (std::abs((int) humidity_x100 - (int) s_last_humidity_x100) >= kHumidityDeltaCenti);
+    if (!publish_gate_allows(s_humidity_gate, changed)) {
+        return;
+    }
+    s_last_humidity_x100 = humidity_x100;
+
     chip::DeviceLayer::SystemLayer().ScheduleLambda([humidity_x100]() {
-        esp_matter_attr_val_t val = esp_matter_uint16(humidity_x100);
-        attribute::update(s_cfg.humidity_endpoint, RelativeHumidityMeasurement::Id,
-                          RelativeHumidityMeasurement::Attributes::MeasuredValue::Id, &val);
+        esp_matter_attr_val_t val = esp_matter_nullable_uint16(humidity_x100);
+        esp_err_t err = attribute::update(s_cfg.humidity_endpoint, RelativeHumidityMeasurement::Id,
+                                          RelativeHumidityMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Humidity update failed: %d", err);
+        }
     });
 }
 
 static void update_pressure(float pressure_hpa)
 {
     const int16_t pressure_kpa_x10 = static_cast<int16_t>(pressure_hpa);
+    const bool changed = !s_pressure_gate.valid || (std::abs(pressure_kpa_x10 - s_last_pressure_hpa) >= kPressureDelta);
+    if (!publish_gate_allows(s_pressure_gate, changed)) {
+        return;
+    }
+    s_last_pressure_hpa = pressure_kpa_x10;
+
     chip::DeviceLayer::SystemLayer().ScheduleLambda([pressure_kpa_x10]() {
-        esp_matter_attr_val_t val = esp_matter_int16(pressure_kpa_x10);
-        attribute::update(s_cfg.pressure_endpoint, PressureMeasurement::Id,
-                          PressureMeasurement::Attributes::MeasuredValue::Id, &val);
+        esp_matter_attr_val_t val = esp_matter_nullable_int16(pressure_kpa_x10);
+        esp_err_t err = attribute::update(s_cfg.pressure_endpoint, PressureMeasurement::Id,
+                                          PressureMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Pressure update failed: %d", err);
+        }
     });
 }
 
@@ -193,22 +263,39 @@ static uint8_t map_iaq_to_enum(float iaq)
 static void update_air_quality(float static_iaq, uint8_t accuracy)
 {
     s_last_iaq_accuracy = accuracy;
-    const uint8_t aq_enum = (accuracy >= 2) ? map_iaq_to_enum(static_iaq)
+    const uint8_t aq_enum = (accuracy >= 1) ? map_iaq_to_enum(static_iaq)
                                             : chip::to_underlying(AirQuality::AirQualityEnum::kUnknown);
+    const bool changed = !s_air_quality_gate.valid || (aq_enum != s_last_air_quality_enum);
+    if (!publish_gate_allows(s_air_quality_gate, changed)) {
+        return;
+    }
+    s_last_air_quality_enum = aq_enum;
 
     chip::DeviceLayer::SystemLayer().ScheduleLambda([aq_enum]() {
-        esp_matter_attr_val_t val = esp_matter_uint8(aq_enum);
-        attribute::update(s_cfg.air_quality_endpoint, AirQuality::Id,
-                          AirQuality::Attributes::AirQuality::Id, &val);
+        esp_matter_attr_val_t val = esp_matter_enum8(aq_enum);
+        esp_err_t err = attribute::update(s_cfg.air_quality_endpoint, AirQuality::Id,
+                                          AirQuality::Attributes::AirQuality::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "AirQuality update failed: %d", err);
+        }
     });
 }
 
 static void update_co2(float co2_ppm)
 {
+    const bool changed = !s_co2_gate.valid || (std::fabs(co2_ppm - s_last_co2_ppm) >= kCo2DeltaPpm);
+    if (!publish_gate_allows(s_co2_gate, changed)) {
+        return;
+    }
+    s_last_co2_ppm = co2_ppm;
+
     chip::DeviceLayer::SystemLayer().ScheduleLambda([co2_ppm]() {
-        esp_matter_attr_val_t val = esp_matter_float(co2_ppm);
-        attribute::update(s_cfg.co2_endpoint, CarbonDioxideConcentrationMeasurement::Id,
-                          CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+        esp_matter_attr_val_t val = esp_matter_nullable_float(co2_ppm);
+        esp_err_t err = attribute::update(s_cfg.co2_endpoint, CarbonDioxideConcentrationMeasurement::Id,
+                                          CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "CO2 update failed: %d", err);
+        }
     });
 }
 
@@ -375,7 +462,7 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
         return ESP_FAIL;
     }
 
-    s_bsec.setTemperatureOffset(0.0f);
+    s_bsec.setTemperatureOffset(kBsecTemperatureOffsetC);
 
     // Load a Bosch-provided configuration blob before subscribing to virtual sensors.
     if (!set_bsec_config_from_blob(wall_env::bsec2_config::kIaq33v3s4d,
@@ -400,7 +487,10 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
     restore_state();
 
     if (!s_task) {
-        xTaskCreate(bsec_task, "bsec2_task", 8192, nullptr, 5, &s_task);
+        if (xTaskCreate(bsec_task, "bsec2_task", 8192, nullptr, 3, &s_task) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start bsec2 task");
+            return ESP_FAIL;
+        }
     }
 
     return ESP_OK;

@@ -331,15 +331,18 @@ static void draw_runtime_screen()
     char line3[32];
 
     if (latest.have_temp && latest.have_humidity) {
-        snprintf(line0, sizeof(line0), "T %.1fC  RH %.1f%%", latest.temp_c, latest.humidity_pct);
+        const float temp_f = (latest.temp_c * 9.0f / 5.0f) + 32.0f;
+        snprintf(line0, sizeof(line0), "T %.1fF  RH %.1f%%", temp_f, latest.humidity_pct);
     } else {
-        snprintf(line0, sizeof(line0), "T --.-C  RH --.-%%");
+        snprintf(line0, sizeof(line0), "T --.-F  RH --.-%%");
     }
 
     if (latest.have_pressure) {
-        snprintf(line1, sizeof(line1), "P %.1fhPa", latest.pressure_hpa);
+        // BSEC reports pressure in hPa. Convert to inHg for display.
+        const float pressure_inhg = latest.pressure_hpa * 0.029529983f;
+        snprintf(line1, sizeof(line1), "P %.2finHg", pressure_inhg);
     } else {
-        snprintf(line1, sizeof(line1), "P ----.-hPa");
+        snprintf(line1, sizeof(line1), "P --.--inHg");
     }
 
     if (latest.have_iaq) {
