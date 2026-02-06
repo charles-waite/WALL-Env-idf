@@ -21,7 +21,7 @@
 
 // drivers implemented by this example
 #include <drivers/bsec2_app.h>
-#include <drivers/oled_ssd1306.h>
+#include <drivers/oled_sh1106.h>
 
 static const char *TAG = "app_main";
 
@@ -114,7 +114,7 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
     // Optional OLED splash/status task (does not abort app on failure).
-    (void) oled_ssd1306_start();
+    (void) oled_sh1106_start();
 
     // add temperature sensor device
     temperature_sensor::config_t temp_sensor_config;
