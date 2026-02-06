@@ -50,6 +50,9 @@ CONFIG_MBEDTLS_HKDF_C=y
 # unique local addresses for fabrics(MAX_FABRIC), a link local address(1)
 CONFIG_LWIP_IPV6_NUM_ADDRESSES=6
 
+# Use IDF mDNS (not CHIP minimal) to avoid commissioning/DNS-SD advertise issues.
+CONFIG_USE_MINIMAL_MDNS=n
+
 # Dynamic endpoints:
 # temp, humidity, pressure, air quality (+ CO2 cluster)
 CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=6
