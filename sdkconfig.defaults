@@ -41,6 +41,7 @@ CONFIG_WIFI_NETWORK_COMMISSIONING_DRIVER=n
 CONFIG_THREAD_NETWORK_COMMISSIONING_DRIVER=y
 CONFIG_SUPPORT_WIFI_NETWORK_DIAGNOSTICS_CLUSTER=n
 CONFIG_SUPPORT_WIFI_NETWORK_MANAGEMENT_CLUSTER=n
+CONFIG_SUPPORT_ETHERNET_NETWORK_DIAGNOSTICS_CLUSTER=n
 CONFIG_ENABLE_WIFI_TELEMETRY=n
 
 # Enable HKDF in mbedtls
@@ -52,6 +53,12 @@ CONFIG_LWIP_IPV6_NUM_ADDRESSES=6
 
 # Use IDF mDNS (not CHIP minimal) to avoid commissioning/DNS-SD advertise issues.
 CONFIG_USE_MINIMAL_MDNS=n
+
+# Thread-only: use IDF mDNS on OpenThread netif only (avoid pulling in Wi‑Fi).
+CONFIG_MDNS_PREDEF_NETIF_STA=n
+CONFIG_MDNS_PREDEF_NETIF_AP=n
+CONFIG_MDNS_PREDEF_NETIF_ETH=n
+CONFIG_MDNS_MAX_INTERFACES=1
 
 # No dynamic endpoints are created at runtime (ZAP-generated model is used),
 # but keep a small non-zero value to avoid surprises if we temporarily add any.
