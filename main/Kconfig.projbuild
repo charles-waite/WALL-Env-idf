@@ -35,7 +35,7 @@ menu "Example Configuration"
         depends on WALL_ENV_OLED_ENABLE
         default 0x3C
         help
-            I2C address for the SSD1306 OLED (commonly 0x3C or 0x3D)
+            I2C address for the OLED (commonly 0x3C or 0x3D)
 
     config WALL_ENV_OLED_COL_OFFSET
         int "OLED column offset"
