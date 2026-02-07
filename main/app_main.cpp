@@ -8,10 +8,15 @@
 
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Server.h>
+#include <app-common/zap-generated/ids/Attributes.h>
+#include <app-common/zap-generated/ids/Clusters.h>
 #include <platform/ConnectivityManager.h>
-#include <bsp/esp-bsp.h>
+#include <button_gpio.h>
+#include <iot_button.h>
 #include <esp_err.h>
 #include <esp_log.h>
+#include <esp_system.h>
+#include <driver/usb_serial_jtag.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <nvs_flash.h>
@@ -26,14 +31,50 @@
 #include <setup_payload/OnboardingCodesUtil.h>
 #include <cctype>
 #include <cstring>
+#include <inttypes.h>
 
 // drivers implemented by this example
 #include <drivers/bsec2_app.h>
 #include <drivers/oled_sh1106.h>
 
 static const char *TAG = "app_main";
+static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchronization::Id;
+static constexpr int kBootButtonGpio = 9;
+static bool s_reboot_after_decom = false;
+
+static const char *attribute_cb_type_str(esp_matter::attribute::callback_type_t type)
+{
+    switch (type) {
+    case esp_matter::attribute::PRE_UPDATE:
+        return "PRE_UPDATE";
+    case esp_matter::attribute::POST_UPDATE:
+        return "POST_UPDATE";
+    case esp_matter::attribute::READ:
+        return "READ";
+    case esp_matter::attribute::WRITE:
+        return "WRITE";
+    default:
+        return "UNKNOWN";
+    }
+}
 
 extern "C" void init_network_driver();
+
+static bool init_time_sync_cluster(esp_matter::node_t *node)
+{
+    if (!node) {
+        return false;
+    }
+    esp_matter::endpoint_t *root = esp_matter::endpoint::get(node, 0);
+    if (!root) {
+        return false;
+    }
+
+    esp_matter::cluster::time_synchronization::config_t cfg;
+    esp_matter::cluster_t *cluster =
+        esp_matter::cluster::time_synchronization::create(root, &cfg, esp_matter::CLUSTER_FLAG_SERVER);
+    return cluster != nullptr;
+}
 
 static void normalize_serial_command(char *cmd)
 {
@@ -76,6 +117,7 @@ static void schedule_decommission()
         }
 
         ESP_LOGI(TAG, "decom: removing %u fabric(s)", before);
+        s_reboot_after_decom = true;
         fabric_table.DeleteAllFabrics();
         ESP_LOGI(TAG, "decom: removal requested, remaining fabrics now %u", fabric_table.FabricCount());
     });
@@ -116,6 +158,43 @@ static void execute_serial_command(const char *cmd)
     ESP_LOGW(TAG, "Unknown serial command: '%s' (try 'help')", cmd);
 }
 
+static bool ensure_usb_serial_jtag_driver()
+{
+    if (usb_serial_jtag_is_driver_installed()) {
+        return true;
+    }
+    usb_serial_jtag_driver_config_t cfg = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "USB Serial JTAG install failed, err=%d", err);
+        return false;
+    }
+    return true;
+}
+
+static int read_console_char()
+{
+    uint8_t ch = 0;
+
+    // Try USB-Serial-JTAG first (cu.usbmodem* monitor path).
+    if (ensure_usb_serial_jtag_driver()) {
+        int n = usb_serial_jtag_read_bytes(&ch, 1, 0);
+        if (n == 1) {
+            return ch;
+        }
+    }
+
+#if CONFIG_ESP_CONSOLE_UART
+    // Fallback to UART0 console only when UART console is enabled.
+    int n = uart_read_bytes(UART_NUM_0, &ch, 1, 0);
+    if (n == 1) {
+        return ch;
+    }
+#endif
+
+    return EOF;
+}
+
 static void serial_command_task(void *arg)
 {
     (void) arg;
@@ -125,7 +204,7 @@ static void serial_command_task(void *arg)
 
     ESP_LOGI(TAG, "Serial command task ready. Type 'decom' to decommission.");
     while (true) {
-        int ch = getchar();
+        int ch = read_console_char();
         if (ch == EOF) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -156,8 +235,18 @@ static void serial_command_task(void *arg)
 
 static esp_err_t factory_reset_button_register()
 {
-    button_handle_t push_button;
-    esp_err_t err = bsp_iot_button_create(&push_button, NULL, BSP_BUTTON_NUM);
+    button_handle_t push_button = nullptr;
+    const button_config_t btn_cfg = {
+        .long_press_time = 5000,
+        .short_press_time = 180,
+    };
+    const button_gpio_config_t btn_gpio_cfg = {
+        .gpio_num = kBootButtonGpio,
+        .active_level = 0,
+        .enable_power_save = false,
+        .disable_pull = false,
+    };
+    esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &push_button);
     VerifyOrReturnError(err == ESP_OK, err);
     return app_reset_button_register(push_button);
 }
@@ -178,11 +267,41 @@ static void open_commissioning_window_if_necessary()
     }
 }
 
+static void update_oled_commissioning_state()
+{
+    const bool is_uncommissioned = (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0);
+    oled_sh1106_set_commissioning_active(is_uncommissioned);
+}
+
+static void push_commissioning_codes_to_oled()
+{
+    char qr_buf[128] = {0};
+    char manual_buf[32] = {0};
+    chip::MutableCharSpan qr_span(qr_buf);
+    chip::MutableCharSpan manual_span(manual_buf);
+
+    CHIP_ERROR qr_err = GetQRCode(qr_span, chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE));
+    CHIP_ERROR man_err =
+        GetManualPairingCode(manual_span, chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE));
+
+    if (qr_err != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "Failed to generate QR payload for OLED, err=%" CHIP_ERROR_FORMAT, qr_err.Format());
+        qr_buf[0] = '\0';
+    }
+    if (man_err != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "Failed to generate manual code for OLED, err=%" CHIP_ERROR_FORMAT, man_err.Format());
+        manual_buf[0] = '\0';
+    }
+
+    oled_sh1106_set_commissioning_codes(qr_buf, manual_buf);
+}
+
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete:
         ESP_LOGI(TAG, "Commissioning complete");
+        update_oled_commissioning_state();
         break;
 
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
@@ -192,6 +311,12 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
         ESP_LOGI(TAG, "Fabric removed successfully");
         open_commissioning_window_if_necessary();
+        push_commissioning_codes_to_oled();
+        update_oled_commissioning_state();
+        if (s_reboot_after_decom && chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
+            ESP_LOGW(TAG, "decom: all fabrics removed; rebooting to clear stale sessions");
+            esp_restart();
+        }
         break;
 
     case chip::DeviceLayer::DeviceEventType::kBLEDeinitialized:
@@ -208,6 +333,33 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 static esp_err_t app_attribute_update_cb(esp_matter::attribute::callback_type_t type, uint16_t endpoint_id, uint32_t cluster_id,
                                         uint32_t attribute_id, esp_matter_attr_val_t *val, void *priv_data)
 {
+    if (cluster_id == kTimeSyncClusterId) {
+        ESP_LOGI(TAG, "TimeSync attr event: type=%s ep=%u attr=0x%08" PRIX32 " val_type=%d",
+                 attribute_cb_type_str(type), endpoint_id, attribute_id, val ? static_cast<int>(val->type) : -1);
+
+        if (!val) {
+            return ESP_OK;
+        }
+
+        if (attribute_id == chip::app::Clusters::TimeSynchronization::Attributes::UTCTime::Id) {
+            if (val->type == ESP_MATTER_VAL_TYPE_UINT64 || val->type == ESP_MATTER_VAL_TYPE_NULLABLE_UINT64) {
+                ESP_LOGI(TAG, "TimeSync UTCTime value=%" PRIu64, val->val.u64);
+            }
+        } else if (attribute_id == chip::app::Clusters::TimeSynchronization::Attributes::Granularity::Id) {
+            if (val->type == ESP_MATTER_VAL_TYPE_ENUM8 || val->type == ESP_MATTER_VAL_TYPE_NULLABLE_ENUM8) {
+                ESP_LOGI(TAG, "TimeSync Granularity=%u", static_cast<unsigned>(val->val.u8));
+            }
+        } else if (attribute_id == chip::app::Clusters::TimeSynchronization::Attributes::TimeSource::Id) {
+            if (val->type == ESP_MATTER_VAL_TYPE_ENUM8 || val->type == ESP_MATTER_VAL_TYPE_NULLABLE_ENUM8) {
+                ESP_LOGI(TAG, "TimeSync TimeSource=%u", static_cast<unsigned>(val->val.u8));
+            }
+        } else if (attribute_id == chip::app::Clusters::TimeSynchronization::Attributes::LocalTime::Id) {
+            if (val->type == ESP_MATTER_VAL_TYPE_UINT64 || val->type == ESP_MATTER_VAL_TYPE_NULLABLE_UINT64) {
+                ESP_LOGI(TAG, "TimeSync LocalTime=%" PRIu64, val->val.u64);
+            }
+        }
+    }
+
     return ESP_OK;
 }
 
@@ -228,6 +380,9 @@ extern "C" void app_main()
     /* Initialize the ESP NVS layer */
     nvs_flash_init();
 
+    // Keep monitor output readable: suppress per-attribute value dumps from esp-matter.
+    esp_log_level_set("esp_matter_attribute", ESP_LOG_WARN);
+
     /* Initialize push button on the dev-kit to reset the device */
     esp_err_t err = factory_reset_button_register();
     ABORT_APP_ON_FAILURE(ESP_OK == err, ESP_LOGE(TAG, "Failed to initialize reset button, err:%d", err));
@@ -239,6 +394,8 @@ extern "C" void app_main()
     esp_matter::node::config_t node_config;
     esp_matter::node_t *node = esp_matter::node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
+
+    ABORT_APP_ON_FAILURE(init_time_sync_cluster(node), ESP_LOGE(TAG, "Failed to create Time Synchronization cluster on endpoint 0"));
 
     // Split endpoints for Apple Home compatibility:
     // temp, humidity, pressure as dedicated endpoints + dedicated AQ endpoint (AQ + CO2).
@@ -332,6 +489,8 @@ extern "C" void app_main()
     // Print commissioning codes on every boot to simplify bring-up/testing.
     ESP_LOGI(TAG, "Matter commissioning codes:");
     PrintOnboardingCodes(chip::RendezvousInformationFlags(chip::RendezvousInformationFlag::kBLE));
+    push_commissioning_codes_to_oled();
+    update_oled_commissioning_state();
 
     // Start BSEC2 processing loop (updates split sensor endpoints).
     bsec2_app_config_t bsec_cfg = {
