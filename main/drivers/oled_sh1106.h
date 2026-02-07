@@ -16,3 +16,10 @@
 // Safe to call even if OLED isn't present on the bus; errors are logged and
 // the app continues.
 esp_err_t oled_sh1106_start();
+
+// Update commissioning codes shown on OLED QR screen.
+// Either argument may be null/empty.
+void oled_sh1106_set_commissioning_codes(const char *qr_code, const char *manual_code);
+
+// Toggle commissioning QR screen visibility.
+void oled_sh1106_set_commissioning_active(bool active);
