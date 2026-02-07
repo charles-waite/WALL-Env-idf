@@ -65,12 +65,12 @@ typedef struct {
 static bsec_latest_t s_latest;
 static portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
 
-static constexpr int64_t kMinPublishIntervalMs = 12000;
+static constexpr int64_t kMinPublishIntervalMs = 30000;
 static constexpr int16_t kTempDeltaCenti = 10;       // 0.10 C
 static constexpr uint16_t kHumidityDeltaCenti = 50;  // 0.50 %
 static constexpr int16_t kPressureDelta = 1;         // 1 hPa
 static constexpr float kCo2DeltaPpm = 10.0f;         // 10 ppm
-static constexpr float kBsecTemperatureOffsetC = 4.0f;
+static constexpr float kBsecTemperatureOffsetC = 6.5f;
 
 typedef struct {
     bool valid = false;
@@ -355,8 +355,9 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
         portENTER_CRITICAL(&s_latest_mux);
         const bsec_latest_t latest = s_latest;
         portEXIT_CRITICAL(&s_latest_mux);
-        ESP_LOGI(TAG, "BSEC: T=%.2fC RH=%.2f%% P=%.2fhPa IAQ=%.1f(acc=%u) CO2=%.0fppm",
-                 latest.temp_c, latest.humidity_pct, latest.pressure_hpa,
+        const float temp_f = (latest.temp_c * 9.0f / 5.0f) + 32.0f;
+        ESP_LOGI(TAG, "BSEC: T=%.2fF RH=%.2f%% P=%.2fhPa IAQ=%.1f(acc=%u) CO2=%.0fppm",
+                 temp_f, latest.humidity_pct, latest.pressure_hpa,
                  latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm);
     }
 }
