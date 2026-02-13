@@ -24,6 +24,13 @@ menu "Example Configuration"
         help
             I2C address for the BME68x sensor (0x76 or 0x77)
 
+    config WALL_ENV_BSEC_TEMP_OFFSET_CENTI
+        int "BSEC temperature offset (x100 C)"
+        default 650
+        help
+            BSEC ambient temperature offset in degrees Celsius. Use revision-
+            specific sdkconfig overlays to set different offsets per case design.
+
     config WALL_ENV_OLED_ENABLE
         bool "Enable SSD1306 OLED"
         default y

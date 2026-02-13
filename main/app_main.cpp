@@ -7,6 +7,7 @@
 */
 
 #include <app/server/CommissioningWindowManager.h>
+#include <app/server/Dnssd.h>
 #include <app/server/Server.h>
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
@@ -41,6 +42,44 @@ static const char *TAG = "app_main";
 static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchronization::Id;
 static constexpr int kBootButtonGpio = 9;
 static bool s_reboot_after_decom = false;
+static bool s_decom_in_progress = false;
+
+enum class decom_state_t : uint8_t {
+    kIdle = 0,
+    kAccepted,
+    kDeleteRequested,
+    kFabricEvent,
+    kServicesReset,
+    kRebootScheduled,
+};
+
+static decom_state_t s_decom_state = decom_state_t::kIdle;
+
+static const char *decom_state_str(decom_state_t state)
+{
+    switch (state) {
+    case decom_state_t::kIdle:
+        return "idle";
+    case decom_state_t::kAccepted:
+        return "accepted";
+    case decom_state_t::kDeleteRequested:
+        return "delete_requested";
+    case decom_state_t::kFabricEvent:
+        return "fabric_event";
+    case decom_state_t::kServicesReset:
+        return "services_reset";
+    case decom_state_t::kRebootScheduled:
+        return "reboot_scheduled";
+    default:
+        return "unknown";
+    }
+}
+
+static void set_decom_state(decom_state_t next, const char *reason)
+{
+    s_decom_state = next;
+    ESP_LOGI(TAG, "decom: state=%s (%s)", decom_state_str(next), reason ? reason : "n/a");
+}
 
 static const char *attribute_cb_type_str(esp_matter::attribute::callback_type_t type)
 {
@@ -111,14 +150,20 @@ static void schedule_decommission()
     chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
         auto &fabric_table = chip::Server::GetInstance().GetFabricTable();
         const uint8_t before = fabric_table.FabricCount();
+        set_decom_state(decom_state_t::kAccepted, "command accepted on CHIP thread");
         if (before == 0) {
             ESP_LOGI(TAG, "decom: no fabrics to remove");
+            s_decom_in_progress = false;
+            s_reboot_after_decom = false;
+            set_decom_state(decom_state_t::kIdle, "no fabrics");
             return;
         }
 
         ESP_LOGI(TAG, "decom: removing %u fabric(s)", before);
+        s_decom_in_progress = true;
         s_reboot_after_decom = true;
         fabric_table.DeleteAllFabrics();
+        set_decom_state(decom_state_t::kDeleteRequested, "DeleteAllFabrics issued");
         ESP_LOGI(TAG, "decom: removal requested, remaining fabrics now %u", fabric_table.FabricCount());
     });
 }
@@ -150,8 +195,27 @@ static void execute_serial_command(const char *cmd)
         return;
     }
 
+    if (strcmp(cmd, "profile") == 0) {
+        ESP_LOGI(TAG, "Temp profile: %s (offset %.2fC)",
+                 bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
+        ESP_LOGI(TAG, "Use: profile v1 | profile v2");
+        return;
+    }
+
+    if (strncmp(cmd, "profile ", 8) == 0) {
+        const char *name = cmd + 8;
+        esp_err_t err = bsec2_app_set_temp_profile(name, true);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Temp profile set: %s (offset %.2fC)",
+                     bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
+        } else {
+            ESP_LOGW(TAG, "Unknown profile '%s'. Valid: v1, v2", name);
+        }
+        return;
+    }
+
     if (strcmp(cmd, "help") == 0) {
-        ESP_LOGI(TAG, "serial commands: decom, decommission, factoryreset, reset, help");
+        ESP_LOGI(TAG, "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, help");
         return;
     }
 
@@ -267,6 +331,29 @@ static void open_commissioning_window_if_necessary()
     }
 }
 
+static void reset_discovery_after_decommission()
+{
+    auto &commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
+    if (commissionMgr.IsCommissioningWindowOpen()) {
+        ESP_LOGI(TAG, "decom: closing existing commissioning window before re-open");
+        commissionMgr.CloseCommissioningWindow();
+    }
+
+    open_commissioning_window_if_necessary();
+
+    // Force DNS-SD service refresh after fabric removal to avoid stale operational advertisements.
+    chip::app::DnssdServer::Instance().StartServer(chip::Dnssd::CommissioningMode::kEnabledBasic);
+    ESP_LOGI(TAG, "decom: discovery services restart requested");
+}
+
+static void decommission_reboot_timer_cb(chip::System::Layer *systemLayer, void *appState)
+{
+    (void) systemLayer;
+    (void) appState;
+    ESP_LOGW(TAG, "decom: rebooting to clear stale sessions");
+    esp_restart();
+}
+
 static void update_oled_commissioning_state()
 {
     const bool is_uncommissioned = (chip::Server::GetInstance().GetFabricTable().FabricCount() == 0);
@@ -310,12 +397,22 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
         ESP_LOGI(TAG, "Fabric removed successfully");
+        if (s_decom_in_progress) {
+            auto &fabric_table = chip::Server::GetInstance().GetFabricTable();
+            ESP_LOGI(TAG, "decom: fabric removed event, remaining fabrics=%u", fabric_table.FabricCount());
+            set_decom_state(decom_state_t::kFabricEvent, "fabric removed event");
+        }
         open_commissioning_window_if_necessary();
         push_commissioning_codes_to_oled();
         update_oled_commissioning_state();
         if (s_reboot_after_decom && chip::Server::GetInstance().GetFabricTable().FabricCount() == 0) {
-            ESP_LOGW(TAG, "decom: all fabrics removed; rebooting to clear stale sessions");
-            esp_restart();
+            set_decom_state(decom_state_t::kServicesReset, "all fabrics removed");
+            reset_discovery_after_decommission();
+            s_decom_in_progress = false;
+            s_reboot_after_decom = false;
+            set_decom_state(decom_state_t::kRebootScheduled, "reboot in 1200 ms");
+            chip::DeviceLayer::SystemLayer().StartTimer(chip::System::Clock::Milliseconds32(1200),
+                                                        decommission_reboot_timer_cb, nullptr);
         }
         break;
 
@@ -378,7 +475,13 @@ extern "C" void app_main()
     uint16_t air_quality_endpoint_id = 0;
 
     /* Initialize the ESP NVS layer */
-    nvs_flash_init();
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS init returned %d; erasing NVS partition and retrying", nvs_err);
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ABORT_APP_ON_FAILURE(nvs_err == ESP_OK, ESP_LOGE(TAG, "Failed to initialize NVS, err:%d", nvs_err));
 
     // Keep monitor output readable: suppress per-attribute value dumps from esp-matter.
     esp_log_level_set("esp_matter_attribute", ESP_LOG_WARN);

@@ -37,3 +37,6 @@ typedef struct {
 
 esp_err_t bsec2_app_start(const bsec2_app_config_t *config);
 bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest);
+esp_err_t bsec2_app_set_temp_profile(const char *profile_name, bool persist);
+const char *bsec2_app_get_temp_profile();
+float bsec2_app_get_temp_offset_c();

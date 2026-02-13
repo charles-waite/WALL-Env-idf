@@ -1,0 +1,3 @@
+# WALL-Env revision profile: v2 case
+# Tune this value after side-by-side thermal equalization testing.
+CONFIG_WALL_ENV_BSEC_TEMP_OFFSET_CENTI=650

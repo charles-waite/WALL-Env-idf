@@ -34,6 +34,7 @@ static const char *TAG = "bsec2_app";
 
 static constexpr const char *kNvsNamespace = "bsec2";
 static constexpr const char *kNvsStateKey = "state";
+static constexpr const char *kNvsTempProfileKey = "temp_profile";
 static constexpr int64_t kStateSaveIntervalMs = 60 * 60 * 1000; // 1 hour
 
 typedef struct {
@@ -70,7 +71,22 @@ static constexpr int16_t kTempDeltaCenti = 10;       // 0.10 C
 static constexpr uint16_t kHumidityDeltaCenti = 50;  // 0.50 %
 static constexpr int16_t kPressureDelta = 1;         // 1 hPa
 static constexpr float kCo2DeltaPpm = 10.0f;         // 10 ppm
-static constexpr float kBsecTemperatureOffsetC = 6.5f;
+static constexpr float kDefaultTempOffsetC = CONFIG_WALL_ENV_BSEC_TEMP_OFFSET_CENTI / 100.0f;
+
+typedef struct {
+    const char *name;
+    float temp_offset_c;
+} temp_profile_t;
+
+static constexpr temp_profile_t kTempProfiles[] = {
+    {.name = "v1", .temp_offset_c = 6.5f},
+    {.name = "v2", .temp_offset_c = 5.0f},
+};
+
+static const temp_profile_t *s_active_temp_profile = &kTempProfiles[1]; // v2 default
+static float s_active_temp_offset_c = kDefaultTempOffsetC;
+static bool s_pending_temp_offset_apply = false;
+static bool s_temp_profile_loaded_from_nvs = false;
 
 typedef struct {
     bool valid = false;
@@ -88,6 +104,96 @@ static uint16_t s_last_humidity_x100 = 0;
 static int16_t s_last_pressure_hpa = 0;
 static uint8_t s_last_air_quality_enum = 0xFF;
 static float s_last_co2_ppm = 0;
+
+static const temp_profile_t *find_temp_profile(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return nullptr;
+    }
+    for (size_t i = 0; i < ARRAY_LEN(kTempProfiles); ++i) {
+        if (strcmp(name, kTempProfiles[i].name) == 0) {
+            return &kTempProfiles[i];
+        }
+    }
+    return nullptr;
+}
+
+static void set_active_temp_profile(const temp_profile_t *profile)
+{
+    if (!profile) {
+        return;
+    }
+    s_active_temp_profile = profile;
+    s_active_temp_offset_c = profile->temp_offset_c;
+    s_pending_temp_offset_apply = true;
+}
+
+static void save_temp_profile_nvs()
+{
+    nvs_handle_t nvs = 0;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS open failed for temp profile save: %d", err);
+        return;
+    }
+    err = nvs_set_str(nvs, kNvsTempProfileKey, s_active_temp_profile->name);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS save temp profile failed: %d", err);
+    } else {
+        ESP_LOGI(TAG, "Temp profile saved: %s (offset %.2fC)",
+                 s_active_temp_profile->name, s_active_temp_offset_c);
+    }
+    nvs_close(nvs);
+}
+
+static void load_temp_profile_nvs()
+{
+    s_temp_profile_loaded_from_nvs = false;
+    const temp_profile_t *fallback = find_temp_profile("v2");
+    if (fallback) {
+        s_active_temp_profile = fallback;
+        s_active_temp_offset_c = fallback->temp_offset_c;
+    } else {
+        s_active_temp_offset_c = kDefaultTempOffsetC;
+    }
+
+    nvs_handle_t nvs = 0;
+    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "NVS open failed for temp profile load: %d", err);
+        return;
+    }
+
+    char profile_name[16] = {0};
+    size_t len = sizeof(profile_name);
+    err = nvs_get_str(nvs, kNvsTempProfileKey, profile_name, &len);
+    nvs_close(nvs);
+
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "Temp profile not set in NVS; using %s (%.2fC)",
+                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+                 s_active_temp_offset_c);
+        return;
+    }
+
+    const temp_profile_t *loaded = find_temp_profile(profile_name);
+    if (!loaded) {
+        ESP_LOGW(TAG, "Unknown temp profile '%s' in NVS; using %s (%.2fC)",
+                 profile_name,
+                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+                 s_active_temp_offset_c);
+        return;
+    }
+
+    s_active_temp_profile = loaded;
+    s_active_temp_offset_c = loaded->temp_offset_c;
+    s_temp_profile_loaded_from_nvs = true;
+    ESP_LOGI(TAG, "Loaded temp profile: %s (offset %.2fC)",
+             s_active_temp_profile->name, s_active_temp_offset_c);
+}
 
 bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
 {
@@ -419,6 +525,13 @@ static void restore_state()
 static void bsec_task(void *arg)
 {
     while (true) {
+        if (s_pending_temp_offset_apply) {
+            s_bsec.setTemperatureOffset(s_active_temp_offset_c);
+            s_pending_temp_offset_apply = false;
+            ESP_LOGI(TAG, "Applied temp profile %s (offset %.2fC)",
+                     s_active_temp_profile ? s_active_temp_profile->name : "custom",
+                     s_active_temp_offset_c);
+        }
         s_bsec.run();
         maybe_save_state();
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -463,7 +576,17 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
         return ESP_FAIL;
     }
 
-    s_bsec.setTemperatureOffset(kBsecTemperatureOffsetC);
+    load_temp_profile_nvs();
+    s_bsec.setTemperatureOffset(s_active_temp_offset_c);
+    s_pending_temp_offset_apply = false;
+    if (s_temp_profile_loaded_from_nvs) {
+        ESP_LOGI(TAG, "Device calibration set for %s.",
+                 s_active_temp_profile ? s_active_temp_profile->name : "custom");
+    } else {
+        ESP_LOGW(TAG, "Device calibration not set. Set with 'profile <v1/v2>'. Using %s (%.2fC).",
+                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+                 s_active_temp_offset_c);
+    }
 
     // Load a Bosch-provided configuration blob before subscribing to virtual sensors.
     if (!set_bsec_config_from_blob(wall_env::bsec2_config::kIaq33v3s4d,
@@ -495,4 +618,29 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
     }
 
     return ESP_OK;
+}
+
+esp_err_t bsec2_app_set_temp_profile(const char *profile_name, bool persist)
+{
+    const temp_profile_t *profile = find_temp_profile(profile_name);
+    if (!profile) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    set_active_temp_profile(profile);
+    s_temp_profile_loaded_from_nvs = true;
+    if (persist) {
+        save_temp_profile_nvs();
+    }
+    return ESP_OK;
+}
+
+const char *bsec2_app_get_temp_profile()
+{
+    return s_active_temp_profile ? s_active_temp_profile->name : "unknown";
+}
+
+float bsec2_app_get_temp_offset_c()
+{
+    return s_active_temp_offset_c;
 }
