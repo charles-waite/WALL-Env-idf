@@ -12,6 +12,7 @@
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <platform/ConnectivityManager.h>
+#include <platform/ThreadStackManager.h>
 #include <button_gpio.h>
 #include <iot_button.h>
 #include <esp_err.h>
@@ -33,6 +34,15 @@
 #include <cctype>
 #include <cstring>
 #include <inttypes.h>
+
+#if CHIP_DEVICE_CONFIG_ENABLE_THREAD
+#include <openthread/link.h>
+#include <openthread/platform/radio.h>
+#include <openthread/thread.h>
+#if CHIP_DEVICE_CONFIG_THREAD_FTD
+#include <openthread/thread_ftd.h>
+#endif // CHIP_DEVICE_CONFIG_THREAD_FTD
+#endif // CHIP_DEVICE_CONFIG_ENABLE_THREAD
 
 // drivers implemented by this example
 #include <drivers/bsec2_app.h>
@@ -96,6 +106,88 @@ static const char *attribute_cb_type_str(esp_matter::attribute::callback_type_t 
         return "UNKNOWN";
     }
 }
+
+#if CHIP_DEVICE_CONFIG_ENABLE_THREAD
+static const char *thread_role_str(otDeviceRole role)
+{
+    switch (role) {
+    case OT_DEVICE_ROLE_DISABLED:
+        return "disabled";
+    case OT_DEVICE_ROLE_DETACHED:
+        return "detached";
+    case OT_DEVICE_ROLE_CHILD:
+        return "child";
+    case OT_DEVICE_ROLE_ROUTER:
+        return "router";
+    case OT_DEVICE_ROLE_LEADER:
+        return "leader";
+    default:
+        return "unknown";
+    }
+}
+
+static void log_thread_diagnostics_snapshot()
+{
+    chip::DeviceLayer::ThreadStackMgr().LockThreadStack();
+    otInstance *ot_inst = chip::DeviceLayer::ThreadStackMgrImpl().OTInstance();
+    if (!ot_inst) {
+        chip::DeviceLayer::ThreadStackMgr().UnlockThreadStack();
+        ESP_LOGW(TAG, "thdiag: OpenThread instance unavailable");
+        return;
+    }
+
+    const otDeviceRole role = otThreadGetDeviceRole(ot_inst);
+    ESP_LOGI(TAG, "thdiag: role=%s channel=%u panid=0x%04X rloc16=0x%04X leaderRouterId=%u",
+             thread_role_str(role), otLinkGetChannel(ot_inst), otLinkGetPanId(ot_inst),
+             otThreadGetRloc16(ot_inst), otThreadGetLeaderRouterId(ot_inst));
+
+    otRouterInfo parent_info;
+    const otError parent_err = otThreadGetParentInfo(ot_inst, &parent_info);
+    if (parent_err == OT_ERROR_NONE) {
+        const int parent_router_id = (parent_info.mRloc16 >> 10) & 0x3F;
+        int8_t parent_avg_rssi = OT_RADIO_RSSI_INVALID;
+        int8_t parent_last_rssi = OT_RADIO_RSSI_INVALID;
+        const bool have_avg_rssi = (otThreadGetParentAverageRssi(ot_inst, &parent_avg_rssi) == OT_ERROR_NONE);
+        const bool have_last_rssi = (otThreadGetParentLastRssi(ot_inst, &parent_last_rssi) == OT_ERROR_NONE);
+
+        if (!have_avg_rssi && !have_last_rssi) {
+            ESP_LOGI(TAG, "thdiag: parent rloc16=0x%04X routerId=%d avgRssi=n/a lastRssi=n/a lqiIn=%u lqiOut=%u",
+                     parent_info.mRloc16, parent_router_id, parent_info.mLinkQualityIn, parent_info.mLinkQualityOut);
+        } else {
+            ESP_LOGI(TAG, "thdiag: parent rloc16=0x%04X routerId=%d avgRssi=%d dBm lastRssi=%d dBm lqiIn=%u lqiOut=%u",
+                     parent_info.mRloc16, parent_router_id, parent_avg_rssi, parent_last_rssi,
+                     parent_info.mLinkQualityIn, parent_info.mLinkQualityOut);
+        }
+    } else {
+        ESP_LOGI(TAG, "thdiag: parent unavailable (otErr=%d)", parent_err);
+    }
+
+    const otMleCounters *mle = otThreadGetMleCounters(ot_inst);
+    if (mle) {
+        ESP_LOGI(TAG, "thdiag: mle detached=%u child=%u router=%u leader=%u attachAttempts=%u parentChanges=%u",
+                 mle->mDetachedRole, mle->mChildRole, mle->mRouterRole, mle->mLeaderRole,
+                 mle->mAttachAttempts, mle->mParentChanges);
+    }
+
+#if CHIP_DEVICE_CONFIG_THREAD_FTD
+    otChildInfo child_info;
+    uint16_t child_index = 0;
+    uint16_t child_count = 0;
+    while (otThreadGetChildInfoByIndex(ot_inst, child_index, &child_info) == OT_ERROR_NONE) {
+        const int child_id = child_info.mRloc16 & 0x01FF;
+        ESP_LOGI(TAG, "thdiag: child[%u] rloc16=0x%04X childId=%d timeout=%u supervsn=%u",
+                 child_count, child_info.mRloc16, child_id, child_info.mTimeout, child_info.mSupervisionInterval);
+        child_count++;
+        child_index++;
+    }
+    ESP_LOGI(TAG, "thdiag: childCount=%u", child_count);
+#else
+    ESP_LOGI(TAG, "thdiag: child table unavailable on MTD build");
+#endif
+
+    chip::DeviceLayer::ThreadStackMgr().UnlockThreadStack();
+}
+#endif // CHIP_DEVICE_CONFIG_ENABLE_THREAD
 
 extern "C" void init_network_driver();
 
@@ -214,8 +306,16 @@ static void execute_serial_command(const char *cmd)
         return;
     }
 
+#if CHIP_DEVICE_CONFIG_ENABLE_THREAD
+    if (strcmp(cmd, "thdiag") == 0 || strcmp(cmd, "threaddiag") == 0) {
+        log_thread_diagnostics_snapshot();
+        return;
+    }
+#endif
+
     if (strcmp(cmd, "help") == 0) {
-        ESP_LOGI(TAG, "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, help");
+        ESP_LOGI(TAG,
+                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, thdiag, threaddiag, help");
         return;
     }
 
@@ -266,7 +366,7 @@ static void serial_command_task(void *arg)
     char cmd[kCmdMax] = {0};
     size_t idx = 0;
 
-    ESP_LOGI(TAG, "Serial command task ready. Type 'decom' to decommission.");
+    ESP_LOGI(TAG, "Serial command task ready. Type 'help' for commands (including 'thdiag').");
     while (true) {
         int ch = read_console_char();
         if (ch == EOF) {
