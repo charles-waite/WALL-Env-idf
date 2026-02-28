@@ -387,8 +387,22 @@ static void update_air_quality(float static_iaq, uint8_t accuracy)
     });
 }
 
-static void update_co2(float co2_ppm)
+static void update_co2(float co2_ppm, uint8_t accuracy)
 {
+    // Per Bosch behavior, eCO2 often stays pinned near 500 ppm until IAQ/eCO2 accuracy improves.
+    // Publish NULL during warmup so controllers don't treat the placeholder as a valid measurement.
+    if (accuracy < 1) {
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
+            esp_matter_attr_val_t val = esp_matter_nullable_float(nullable<float>());
+            esp_err_t err = attribute::update(s_cfg.co2_endpoint, CarbonDioxideConcentrationMeasurement::Id,
+                                              CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "CO2 warmup update failed: %d", err);
+            }
+        });
+        return;
+    }
+
     const bool changed = !s_co2_gate.valid || (std::fabs(co2_ppm - s_last_co2_ppm) >= kCo2DeltaPpm);
     if (!publish_gate_allows(s_co2_gate, changed)) {
         return;
@@ -444,10 +458,10 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             break;
         case BSEC_OUTPUT_CO2_EQUIVALENT:
             portENTER_CRITICAL(&s_latest_mux);
-            s_latest.have_co2 = true;
+            s_latest.have_co2 = (out.accuracy >= 1);
             s_latest.co2_ppm = out.signal;
             portEXIT_CRITICAL(&s_latest_mux);
-            update_co2(out.signal);
+            update_co2(out.signal, out.accuracy);
             break;
         default:
             break;
