@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(PROJECT_VER "1.2b")
+set(PROJECT_VER "1.2")
 set(PROJECT_VER_NUMBER 1)
 
 # Use the pinned esp-matter submodule for reproducible builds.
