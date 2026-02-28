@@ -115,6 +115,21 @@ static bool init_time_sync_cluster(esp_matter::node_t *node)
     return cluster != nullptr;
 }
 
+static void set_basic_information_defaults()
+{
+    // Keep SerialNumber populated for controllers that surface it in "Device info".
+    static constexpr char kDefaultSerial[] = CONFIG_USE_TEST_SERIAL_NUMBER;
+    if (!esp_matter::attribute::get(0, chip::app::Clusters::BasicInformation::Id,
+                                    chip::app::Clusters::BasicInformation::Attributes::SerialNumber::Id)) {
+        ESP_LOGW(TAG, "BasicInformation SerialNumber attribute not present; skipping default serial update");
+        return;
+    }
+    esp_matter_attr_val_t serial_val =
+        esp_matter_char_str(const_cast<char *>(kDefaultSerial), strlen(kDefaultSerial));
+    esp_matter::attribute::update(0, chip::app::Clusters::BasicInformation::Id,
+                                  chip::app::Clusters::BasicInformation::Attributes::SerialNumber::Id, &serial_val);
+}
+
 static void normalize_serial_command(char *cmd)
 {
     if (!cmd) {
@@ -468,12 +483,6 @@ static esp_err_t app_identification_cb(esp_matter::identification::callback_type
 
 extern "C" void app_main()
 {
-    // Endpoint 0 is always the Root Node.
-    uint16_t temp_endpoint_id = 0;
-    uint16_t humidity_endpoint_id = 0;
-    uint16_t pressure_endpoint_id = 0;
-    uint16_t air_quality_endpoint_id = 0;
-
     /* Initialize the ESP NVS layer */
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -498,63 +507,64 @@ extern "C" void app_main()
     esp_matter::node_t *node = esp_matter::node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
-    ABORT_APP_ON_FAILURE(init_time_sync_cluster(node), ESP_LOGE(TAG, "Failed to create Time Synchronization cluster on endpoint 0"));
-
-    // Split endpoints for Apple Home compatibility:
-    // temp, humidity, pressure as dedicated endpoints + dedicated AQ endpoint (AQ + CO2).
+    // Materialize sensor endpoints in esp-matter data model.
     esp_matter::endpoint::temperature_sensor::config_t temp_sensor_cfg;
-    esp_matter::endpoint_t *temp_ep =
-        esp_matter::endpoint::temperature_sensor::create(node, &temp_sensor_cfg, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
-    ABORT_APP_ON_FAILURE(temp_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature_sensor endpoint"));
-    temp_endpoint_id = esp_matter::endpoint::get_id(temp_ep);
+    esp_matter::endpoint_t *temp_ep = esp_matter::endpoint::temperature_sensor::create(node, &temp_sensor_cfg, 0, nullptr);
+    ABORT_APP_ON_FAILURE(temp_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature endpoint"));
 
     esp_matter::endpoint::humidity_sensor::config_t humidity_sensor_cfg;
-    esp_matter::endpoint_t *humidity_ep =
-        esp_matter::endpoint::humidity_sensor::create(node, &humidity_sensor_cfg, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
-    ABORT_APP_ON_FAILURE(humidity_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity_sensor endpoint"));
-    humidity_endpoint_id = esp_matter::endpoint::get_id(humidity_ep);
+    esp_matter::endpoint_t *humidity_ep = esp_matter::endpoint::humidity_sensor::create(node, &humidity_sensor_cfg, 0, nullptr);
+    ABORT_APP_ON_FAILURE(humidity_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity endpoint"));
 
     esp_matter::endpoint::pressure_sensor::config_t pressure_sensor_cfg;
-    esp_matter::endpoint_t *pressure_ep =
-        esp_matter::endpoint::pressure_sensor::create(node, &pressure_sensor_cfg, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
-    ABORT_APP_ON_FAILURE(pressure_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure_sensor endpoint"));
-    pressure_endpoint_id = esp_matter::endpoint::get_id(pressure_ep);
+    esp_matter::endpoint_t *pressure_ep = esp_matter::endpoint::pressure_sensor::create(node, &pressure_sensor_cfg, 0, nullptr);
+    ABORT_APP_ON_FAILURE(pressure_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure endpoint"));
 
-    // Build AQ endpoint manually to avoid helper-created internal-only AirQuality attr.
-    esp_matter::endpoint_t *aq_ep = esp_matter::endpoint::create(node, esp_matter::ENDPOINT_FLAG_NONE, nullptr);
-    ABORT_APP_ON_FAILURE(aq_ep != nullptr, ESP_LOGE(TAG, "Failed to create air_quality_sensor endpoint"));
-    ABORT_APP_ON_FAILURE(esp_matter::cluster::descriptor::create(aq_ep, nullptr, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
-                         ESP_LOGE(TAG, "Failed to create AQ Descriptor cluster"));
-    ABORT_APP_ON_FAILURE(esp_matter::endpoint::add_device_type(aq_ep,
-                                                                ESP_MATTER_AIR_QUALITY_SENSOR_DEVICE_TYPE_ID,
-                                                                ESP_MATTER_AIR_QUALITY_SENSOR_DEVICE_TYPE_VERSION) == ESP_OK,
-                         ESP_LOGE(TAG, "Failed to add AirQualitySensor device type"));
-    air_quality_endpoint_id = esp_matter::endpoint::get_id(aq_ep);
-    esp_matter::cluster::identify::config_t aq_identify_cfg;
-    ABORT_APP_ON_FAILURE(esp_matter::cluster::identify::create(aq_ep, &aq_identify_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
-                         ESP_LOGE(TAG, "Failed to create AQ Identify cluster"));
+    // Keep AQ endpoint creation explicit in code:
+    // current esp-matter ZAP codegen does not materialize AirQuality (0x005B) in endpoint_config.h.
+    // CO2 (0x040D) is still ZAP-defined on this endpoint; AQ is added here to stay spec-aligned at runtime.
+    esp_matter::endpoint_t *aq_ep = esp_matter::endpoint::create(node, 0, nullptr);
+    ABORT_APP_ON_FAILURE(aq_ep != nullptr, ESP_LOGE(TAG, "Failed to create air-quality endpoint"));
+    esp_matter::cluster::descriptor::config_t descriptor_cfg;
+    ABORT_APP_ON_FAILURE(esp_matter::cluster::descriptor::create(aq_ep, &descriptor_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
+                         ESP_LOGE(TAG, "Failed to create descriptor cluster on AQ endpoint"));
+    ABORT_APP_ON_FAILURE(
+        esp_matter::endpoint::add_device_type(aq_ep, ESP_MATTER_AIR_QUALITY_SENSOR_DEVICE_TYPE_ID,
+                                              ESP_MATTER_AIR_QUALITY_SENSOR_DEVICE_TYPE_VERSION) == ESP_OK,
+        ESP_LOGE(TAG, "Failed to add air-quality device type"));
+    esp_matter::cluster::identify::config_t identify_cfg;
+    ABORT_APP_ON_FAILURE(esp_matter::cluster::identify::create(aq_ep, &identify_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
+                         ESP_LOGE(TAG, "Failed to create identify cluster on AQ endpoint"));
 
-    // Create AirQuality as esp-matter-managed attr so attribute::update() works.
-    esp_matter::cluster_t *aq_cluster =
-        esp_matter::cluster::create(aq_ep, chip::app::Clusters::AirQuality::Id, esp_matter::CLUSTER_FLAG_SERVER);
+    esp_matter::cluster_t *aq_cluster = esp_matter::cluster::create(aq_ep, chip::app::Clusters::AirQuality::Id, esp_matter::CLUSTER_FLAG_SERVER);
     ABORT_APP_ON_FAILURE(aq_cluster != nullptr, ESP_LOGE(TAG, "Failed to create AirQuality cluster"));
     ABORT_APP_ON_FAILURE(esp_matter::cluster::global::attribute::create_feature_map(aq_cluster, 0) != nullptr,
                          ESP_LOGE(TAG, "Failed to create AirQuality FeatureMap"));
-    ABORT_APP_ON_FAILURE(esp_matter::attribute::create(aq_cluster, chip::app::Clusters::AirQuality::Attributes::AirQuality::Id,
-                                                       esp_matter::ATTRIBUTE_FLAG_NONE,
-                                                       esp_matter_enum8(chip::to_underlying(chip::app::Clusters::AirQuality::AirQualityEnum::kUnknown))) != nullptr,
-                         ESP_LOGE(TAG, "Failed to create AirQuality attribute"));
+    ABORT_APP_ON_FAILURE(
+        esp_matter::attribute::create(
+            aq_cluster, chip::app::Clusters::AirQuality::Attributes::AirQuality::Id, esp_matter::ATTRIBUTE_FLAG_NONE,
+            esp_matter_enum8(chip::to_underlying(chip::app::Clusters::AirQuality::AirQualityEnum::kUnknown))) != nullptr,
+        ESP_LOGE(TAG, "Failed to create AirQuality measured-value attribute"));
     ABORT_APP_ON_FAILURE(esp_matter::cluster::global::attribute::create_cluster_revision(aq_cluster, 1) != nullptr,
                          ESP_LOGE(TAG, "Failed to create AirQuality ClusterRevision"));
 
-    // Keep CO2 on the AirQuality endpoint.
+    // Add CO2 concentration cluster on the air-quality endpoint.
     esp_matter::cluster::carbon_dioxide_concentration_measurement::config_t co2_cfg;
-    co2_cfg.measurement_medium = 0x00; // Air
-    co2_cfg.feature_flags = esp_matter::cluster::concentration_measurement::feature::numeric_measurement::get_id();
-    co2_cfg.features.numeric_measurement.measurement_unit = 0x00; // ppm
-    ABORT_APP_ON_FAILURE(
-        esp_matter::cluster::carbon_dioxide_concentration_measurement::create(aq_ep, &co2_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
-        ESP_LOGE(TAG, "Failed to create CO2 Measurement cluster"));
+    co2_cfg.feature_flags = esp_matter::cluster::carbon_dioxide_concentration_measurement::feature::numeric_measurement::get_id();
+    esp_matter::cluster_t *co2_cluster =
+        esp_matter::cluster::carbon_dioxide_concentration_measurement::create(aq_ep, &co2_cfg, esp_matter::CLUSTER_FLAG_SERVER);
+    ABORT_APP_ON_FAILURE(co2_cluster != nullptr, ESP_LOGE(TAG, "Failed to create CO2 cluster"));
+
+    const uint16_t temp_endpoint_id = esp_matter::endpoint::get_id(temp_ep);
+    const uint16_t humidity_endpoint_id = esp_matter::endpoint::get_id(humidity_ep);
+    const uint16_t pressure_endpoint_id = esp_matter::endpoint::get_id(pressure_ep);
+    const uint16_t air_quality_endpoint_id = esp_matter::endpoint::get_id(aq_ep);
+    ESP_LOGI(TAG, "Sensor endpoints: temp=%u humidity=%u pressure=%u aq/co2=%u", temp_endpoint_id, humidity_endpoint_id,
+             pressure_endpoint_id, air_quality_endpoint_id);
+
+    // Keep Time Sync available on endpoint 0. If ZAP already instantiated this cluster,
+    // create() is a no-op and returns the existing instance.
+    ABORT_APP_ON_FAILURE(init_time_sync_cluster(node), ESP_LOGE(TAG, "Failed to ensure Time Synchronization cluster on endpoint 0"));
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     /* Set OpenThread platform config */
@@ -573,6 +583,8 @@ extern "C" void app_main()
     /* Matter start */
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
+
+    set_basic_information_defaults();
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     // esp_matter core defaults FTD devices to Router role.
