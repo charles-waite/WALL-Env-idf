@@ -32,6 +32,7 @@
 #include <esp_matter_endpoint.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <inttypes.h>
 
@@ -305,7 +306,25 @@ static void execute_serial_command(const char *cmd)
     if (strcmp(cmd, "profile") == 0) {
         ESP_LOGI(TAG, "Temp profile: %s (offset %.2fC)",
                  bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
-        ESP_LOGI(TAG, "Use: profile v1 | profile v2");
+        ESP_LOGI(TAG, "Use: profile v1 | profile v2 | profile custom <offsetC>");
+        return;
+    }
+
+    if (strncmp(cmd, "profile custom ", 15) == 0) {
+        const char *offset_str = cmd + 15;
+        char *end = nullptr;
+        float offset_c = strtof(offset_str, &end);
+        if (end == offset_str || (end && *end != '\0')) {
+            ESP_LOGW(TAG, "Invalid custom offset '%s'. Example: profile custom 4.75", offset_str);
+            return;
+        }
+        esp_err_t err = bsec2_app_set_temp_offset_custom(offset_c, true);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Temp profile set: %s (offset %.2fC)",
+                     bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
+        } else {
+            ESP_LOGW(TAG, "Invalid custom offset %.3fC. Allowed range: -20.0 to 20.0", offset_c);
+        }
         return;
     }
 
@@ -316,7 +335,7 @@ static void execute_serial_command(const char *cmd)
             ESP_LOGI(TAG, "Temp profile set: %s (offset %.2fC)",
                      bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
         } else {
-            ESP_LOGW(TAG, "Unknown profile '%s'. Valid: v1, v2", name);
+            ESP_LOGW(TAG, "Unknown profile '%s'. Valid: v1, v2, custom", name);
         }
         return;
     }
@@ -330,7 +349,7 @@ static void execute_serial_command(const char *cmd)
 
     if (strcmp(cmd, "help") == 0) {
         ESP_LOGI(TAG,
-                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, thdiag, threaddiag, help");
+                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, profile custom <offsetC>, thdiag, threaddiag, help");
         return;
     }
 
