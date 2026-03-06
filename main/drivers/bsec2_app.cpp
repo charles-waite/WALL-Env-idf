@@ -52,14 +52,14 @@ static int64_t s_last_log_ms = 0;
 typedef struct {
     bool have_temp = false;
     bool have_humidity = false;
-    bool have_pressure = false;
     bool have_iaq = false;
     bool have_co2 = false;
+    bool have_tvoc = false;
     float temp_c = 0;
     float humidity_pct = 0;
-    float pressure_hpa = 0;
     float static_iaq = 0;
     float co2_ppm = 0;
+    float tvoc_ppm = 0;
     uint8_t iaq_accuracy = 0;
 } bsec_latest_t;
 
@@ -69,8 +69,8 @@ static portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
 static constexpr int64_t kMinPublishIntervalMs = 30000;
 static constexpr int16_t kTempDeltaCenti = 10;       // 0.10 C
 static constexpr uint16_t kHumidityDeltaCenti = 50;  // 0.50 %
-static constexpr int16_t kPressureDelta = 1;         // 1 hPa
 static constexpr float kCo2DeltaPpm = 10.0f;         // 10 ppm
+static constexpr float kTvocDeltaPpm = 0.05f;        // 0.05 ppm
 static constexpr float kDefaultTempOffsetC = CONFIG_WALL_ENV_BSEC_TEMP_OFFSET_CENTI / 100.0f;
 
 typedef struct {
@@ -95,15 +95,15 @@ typedef struct {
 
 static publish_gate_t s_temp_gate;
 static publish_gate_t s_humidity_gate;
-static publish_gate_t s_pressure_gate;
 static publish_gate_t s_air_quality_gate;
 static publish_gate_t s_co2_gate;
+static publish_gate_t s_tvoc_gate;
 
 static int16_t s_last_temp_c_x100 = 0;
 static uint16_t s_last_humidity_x100 = 0;
-static int16_t s_last_pressure_hpa = 0;
 static uint8_t s_last_air_quality_enum = 0xFF;
 static float s_last_co2_ppm = 0;
+static float s_last_tvoc_ppm = 0;
 
 static const temp_profile_t *find_temp_profile(const char *name)
 {
@@ -207,15 +207,15 @@ bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
 
     out_latest->have_temp = latest.have_temp;
     out_latest->have_humidity = latest.have_humidity;
-    out_latest->have_pressure = latest.have_pressure;
     out_latest->have_iaq = latest.have_iaq;
     out_latest->have_co2 = latest.have_co2;
+    out_latest->have_tvoc = latest.have_tvoc;
     out_latest->temp_c = latest.temp_c;
     out_latest->humidity_pct = latest.humidity_pct;
-    out_latest->pressure_hpa = latest.pressure_hpa;
     out_latest->iaq = latest.static_iaq;
     out_latest->iaq_accuracy = latest.iaq_accuracy;
     out_latest->co2_ppm = latest.co2_ppm;
+    out_latest->tvoc_ppm = latest.tvoc_ppm;
     return true;
 }
 
@@ -336,25 +336,6 @@ static void update_humidity(float humidity_pct)
     });
 }
 
-static void update_pressure(float pressure_hpa)
-{
-    const int16_t pressure_kpa_x10 = static_cast<int16_t>(pressure_hpa);
-    const bool changed = !s_pressure_gate.valid || (std::abs(pressure_kpa_x10 - s_last_pressure_hpa) >= kPressureDelta);
-    if (!publish_gate_allows(s_pressure_gate, changed)) {
-        return;
-    }
-    s_last_pressure_hpa = pressure_kpa_x10;
-
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([pressure_kpa_x10]() {
-        esp_matter_attr_val_t val = esp_matter_nullable_int16(pressure_kpa_x10);
-        esp_err_t err = attribute::update(s_cfg.pressure_endpoint, PressureMeasurement::Id,
-                                          PressureMeasurement::Attributes::MeasuredValue::Id, &val);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Pressure update failed: %d", err);
-        }
-    });
-}
-
 static uint8_t map_iaq_to_enum(float iaq)
 {
     using AirQualityEnum = AirQuality::AirQualityEnum;
@@ -389,6 +370,10 @@ static void update_air_quality(float static_iaq, uint8_t accuracy)
 
 static void update_co2(float co2_ppm, uint8_t accuracy)
 {
+    if (s_cfg.co2_endpoint == 0) {
+        return;
+    }
+
     // Per Bosch behavior, eCO2 often stays pinned near 500 ppm until IAQ/eCO2 accuracy improves.
     // Publish NULL during warmup so controllers don't treat the placeholder as a valid measurement.
     if (accuracy < 1) {
@@ -419,6 +404,41 @@ static void update_co2(float co2_ppm, uint8_t accuracy)
     });
 }
 
+static void update_tvoc(float tvoc_ppm, uint8_t accuracy)
+{
+    if (s_cfg.tvoc_endpoint == 0) {
+        return;
+    }
+
+    // Keep TVOC null until BSEC has at least low confidence.
+    if (accuracy < 1) {
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
+            esp_matter_attr_val_t val = esp_matter_nullable_float(nullable<float>());
+            esp_err_t err = attribute::update(s_cfg.tvoc_endpoint, TotalVolatileOrganicCompoundsConcentrationMeasurement::Id,
+                                              TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "TVOC warmup update failed: %d", err);
+            }
+        });
+        return;
+    }
+
+    const bool changed = !s_tvoc_gate.valid || (std::fabs(tvoc_ppm - s_last_tvoc_ppm) >= kTvocDeltaPpm);
+    if (!publish_gate_allows(s_tvoc_gate, changed)) {
+        return;
+    }
+    s_last_tvoc_ppm = tvoc_ppm;
+
+    chip::DeviceLayer::SystemLayer().ScheduleLambda([tvoc_ppm]() {
+        esp_matter_attr_val_t val = esp_matter_nullable_float(tvoc_ppm);
+        esp_err_t err = attribute::update(s_cfg.tvoc_endpoint, TotalVolatileOrganicCompoundsConcentrationMeasurement::Id,
+                                          TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "TVOC update failed: %d", err);
+        }
+    });
+}
+
 static void bsec_callback(const bme68xData data, const bsecOutputs outputs, const Bsec2 bsec)
 {
     (void) data;
@@ -441,13 +461,6 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             portEXIT_CRITICAL(&s_latest_mux);
             update_humidity(out.signal);
             break;
-        case BSEC_OUTPUT_RAW_PRESSURE:
-            portENTER_CRITICAL(&s_latest_mux);
-            s_latest.have_pressure = true;
-            s_latest.pressure_hpa = out.signal;
-            portEXIT_CRITICAL(&s_latest_mux);
-            update_pressure(out.signal);
-            break;
         case BSEC_OUTPUT_STATIC_IAQ:
             portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_iaq = true;
@@ -463,6 +476,13 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             portEXIT_CRITICAL(&s_latest_mux);
             update_co2(out.signal, out.accuracy);
             break;
+        case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
+            portENTER_CRITICAL(&s_latest_mux);
+            s_latest.have_tvoc = (out.accuracy >= 1);
+            s_latest.tvoc_ppm = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
+            update_tvoc(out.signal, out.accuracy);
+            break;
         default:
             break;
         }
@@ -476,9 +496,9 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
         const bsec_latest_t latest = s_latest;
         portEXIT_CRITICAL(&s_latest_mux);
         const float temp_f = (latest.temp_c * 9.0f / 5.0f) + 32.0f;
-        ESP_LOGI(TAG, "BSEC: T=%.2fF RH=%.2f%% P=%.2fhPa IAQ=%.1f(acc=%u) CO2=%.0fppm",
-                 temp_f, latest.humidity_pct, latest.pressure_hpa,
-                 latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm);
+        ESP_LOGI(TAG, "BSEC: T=%.2fF RH=%.2f%% IAQ=%.1f(acc=%u) CO2=%.0fppm TVOC=%.2fppm",
+                 temp_f, latest.humidity_pct,
+                 latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm, latest.tvoc_ppm);
     }
 }
 
@@ -612,9 +632,9 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
     bsecSensor sensor_list[] = {
         BSEC_OUTPUT_STATIC_IAQ,
         BSEC_OUTPUT_CO2_EQUIVALENT,
+        BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
         BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
         BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-        BSEC_OUTPUT_RAW_PRESSURE,
     };
     if (!s_bsec.updateSubscription(sensor_list, ARRAY_LEN(sensor_list), BSEC_SAMPLE_RATE_LP)) {
         ESP_LOGE(TAG, "BSEC updateSubscription failed (status=%d)", static_cast<int>(s_bsec.status));

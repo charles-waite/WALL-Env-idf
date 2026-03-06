@@ -607,22 +607,7 @@ extern "C" void app_main()
     esp_matter::node_t *node = esp_matter::node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
-    // Materialize sensor endpoints in esp-matter data model.
-    esp_matter::endpoint::temperature_sensor::config_t temp_sensor_cfg;
-    esp_matter::endpoint_t *temp_ep = esp_matter::endpoint::temperature_sensor::create(node, &temp_sensor_cfg, 0, nullptr);
-    ABORT_APP_ON_FAILURE(temp_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature endpoint"));
-
-    esp_matter::endpoint::humidity_sensor::config_t humidity_sensor_cfg;
-    esp_matter::endpoint_t *humidity_ep = esp_matter::endpoint::humidity_sensor::create(node, &humidity_sensor_cfg, 0, nullptr);
-    ABORT_APP_ON_FAILURE(humidity_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity endpoint"));
-
-    esp_matter::endpoint::pressure_sensor::config_t pressure_sensor_cfg;
-    esp_matter::endpoint_t *pressure_ep = esp_matter::endpoint::pressure_sensor::create(node, &pressure_sensor_cfg, 0, nullptr);
-    ABORT_APP_ON_FAILURE(pressure_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure endpoint"));
-
-    // Keep AQ endpoint creation explicit in code:
-    // current esp-matter ZAP codegen does not materialize AirQuality (0x005B) in endpoint_config.h.
-    // CO2 (0x040D) is still ZAP-defined on this endpoint; AQ is added here to stay spec-aligned at runtime.
+    // Create a single Air Quality Sensor endpoint with optional measurement clusters.
     esp_matter::endpoint_t *aq_ep = esp_matter::endpoint::create(node, 0, nullptr);
     ABORT_APP_ON_FAILURE(aq_ep != nullptr, ESP_LOGE(TAG, "Failed to create air-quality endpoint"));
     esp_matter::cluster::descriptor::config_t descriptor_cfg;
@@ -635,6 +620,15 @@ extern "C" void app_main()
     esp_matter::cluster::identify::config_t identify_cfg;
     ABORT_APP_ON_FAILURE(esp_matter::cluster::identify::create(aq_ep, &identify_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
                          ESP_LOGE(TAG, "Failed to create identify cluster on AQ endpoint"));
+
+    // Optional clusters on Air Quality Sensor device type (Matter 1.4.2 device library).
+    esp_matter::cluster::temperature_measurement::config_t temp_cfg;
+    ABORT_APP_ON_FAILURE(esp_matter::cluster::temperature_measurement::create(aq_ep, &temp_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
+                         ESP_LOGE(TAG, "Failed to create temperature cluster on AQ endpoint"));
+
+    esp_matter::cluster::relative_humidity_measurement::config_t humidity_cfg;
+    ABORT_APP_ON_FAILURE(esp_matter::cluster::relative_humidity_measurement::create(aq_ep, &humidity_cfg, esp_matter::CLUSTER_FLAG_SERVER) != nullptr,
+                         ESP_LOGE(TAG, "Failed to create humidity cluster on AQ endpoint"));
 
     esp_matter::cluster_t *aq_cluster = esp_matter::cluster::create(aq_ep, chip::app::Clusters::AirQuality::Id, esp_matter::CLUSTER_FLAG_SERVER);
     ABORT_APP_ON_FAILURE(aq_cluster != nullptr, ESP_LOGE(TAG, "Failed to create AirQuality cluster"));
@@ -655,12 +649,16 @@ extern "C" void app_main()
         esp_matter::cluster::carbon_dioxide_concentration_measurement::create(aq_ep, &co2_cfg, esp_matter::CLUSTER_FLAG_SERVER);
     ABORT_APP_ON_FAILURE(co2_cluster != nullptr, ESP_LOGE(TAG, "Failed to create CO2 cluster"));
 
-    const uint16_t temp_endpoint_id = esp_matter::endpoint::get_id(temp_ep);
-    const uint16_t humidity_endpoint_id = esp_matter::endpoint::get_id(humidity_ep);
-    const uint16_t pressure_endpoint_id = esp_matter::endpoint::get_id(pressure_ep);
+    esp_matter::cluster::total_volatile_organic_compounds_concentration_measurement::config_t tvoc_cfg;
+    tvoc_cfg.feature_flags = esp_matter::cluster::concentration_measurement::feature::numeric_measurement::get_id();
+    tvoc_cfg.features.numeric_measurement.measurement_unit = 0x00; // ppm
+    esp_matter::cluster_t *tvoc_cluster =
+        esp_matter::cluster::total_volatile_organic_compounds_concentration_measurement::create(
+            aq_ep, &tvoc_cfg, esp_matter::CLUSTER_FLAG_SERVER);
+    ABORT_APP_ON_FAILURE(tvoc_cluster != nullptr, ESP_LOGE(TAG, "Failed to create TVOC cluster"));
+
     const uint16_t air_quality_endpoint_id = esp_matter::endpoint::get_id(aq_ep);
-    ESP_LOGI(TAG, "Sensor endpoints: temp=%u humidity=%u pressure=%u aq/co2=%u", temp_endpoint_id, humidity_endpoint_id,
-             pressure_endpoint_id, air_quality_endpoint_id);
+    ESP_LOGI(TAG, "Sensor endpoint (Air Quality Sensor)=%u", air_quality_endpoint_id);
 
     // Keep Time Sync available on endpoint 0. If ZAP already instantiated this cluster,
     // create() is a no-op and returns the existing instance.
@@ -709,11 +707,11 @@ extern "C" void app_main()
 
     // Start BSEC2 processing loop (updates split sensor endpoints).
     bsec2_app_config_t bsec_cfg = {
-        .temp_endpoint = temp_endpoint_id,
-        .humidity_endpoint = humidity_endpoint_id,
-        .pressure_endpoint = pressure_endpoint_id,
+        .temp_endpoint = air_quality_endpoint_id,
+        .humidity_endpoint = air_quality_endpoint_id,
         .air_quality_endpoint = air_quality_endpoint_id,
         .co2_endpoint = air_quality_endpoint_id,
+        .tvoc_endpoint = air_quality_endpoint_id,
     };
     err = bsec2_app_start(&bsec_cfg);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
