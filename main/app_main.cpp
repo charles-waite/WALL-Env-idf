@@ -707,13 +707,12 @@ extern "C" void app_main()
     set_basic_information_defaults();
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
-    // esp_matter core defaults FTD devices to Router role.
-    // Override to Full End Device so OpenThread can promote to router only if needed.
+    // Force Router-capable behavior for better Thread mesh relay coverage.
     if (chip::DeviceLayer::ConnectivityMgr().SetThreadDeviceType(
-            chip::DeviceLayer::ConnectivityManager::kThreadDeviceType_FullEndDevice) != CHIP_NO_ERROR) {
-        ESP_LOGW(TAG, "Failed to set Thread device type to FullEndDevice");
+            chip::DeviceLayer::ConnectivityManager::kThreadDeviceType_Router) != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "Failed to set Thread device type to Router");
     } else {
-        ESP_LOGI(TAG, "Thread device type set to FullEndDevice");
+        ESP_LOGI(TAG, "Thread device type set to Router");
     }
 #endif
 
