@@ -1,0 +1,14 @@
+# ESP32-C6 Supermini board profile
+#
+# This profile maps hardware I2C to:
+#   SDA = GPIO0
+#   SCL = GPIO1
+#
+# NOTE: GPIO8/GPIO9 are strapping pins on ESP32-C6. External pull strength and
+# reset-time behavior of attached peripherals matter for reliable boot.
+
+CONFIG_SHTC3_I2C_SDA_PIN=0
+CONFIG_SHTC3_I2C_SCL_PIN=1
+
+# Supermini profile: disable factory-reset button binding by default.
+CONFIG_WALL_ENV_RESET_BUTTON_GPIO=-1

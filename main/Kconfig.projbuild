@@ -31,6 +31,15 @@ menu "Example Configuration"
             BSEC ambient temperature offset in degrees Celsius. Use revision-
             specific sdkconfig overlays to set different offsets per case design.
 
+    config WALL_ENV_RESET_BUTTON_GPIO
+        int "Factory reset button GPIO (-1 to disable)"
+        default 9
+        range -1 23
+        help
+            GPIO used for long-press factory reset handling. Set to -1 when the
+            selected board does not expose a dedicated button or if the pin is
+            repurposed (for example, for I2C SCL on some ESP32-C6 boards).
+
     config WALL_ENV_OLED_ENABLE
         bool "Enable SSD1306 OLED"
         default y

@@ -51,7 +51,7 @@
 
 static const char *TAG = "app_main";
 static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchronization::Id;
-static constexpr int kBootButtonGpio = 9;
+static constexpr int kResetButtonGpio = CONFIG_WALL_ENV_RESET_BUTTON_GPIO;
 static bool s_reboot_after_decom = false;
 static bool s_decom_in_progress = false;
 
@@ -433,13 +433,18 @@ static void serial_command_task(void *arg)
 
 static esp_err_t factory_reset_button_register()
 {
+    if (kResetButtonGpio < 0) {
+        ESP_LOGI(TAG, "Factory reset button disabled by config");
+        return ESP_OK;
+    }
+
     button_handle_t push_button = nullptr;
     const button_config_t btn_cfg = {
         .long_press_time = 5000,
         .short_press_time = 180,
     };
     const button_gpio_config_t btn_gpio_cfg = {
-        .gpio_num = kBootButtonGpio,
+        .gpio_num = kResetButtonGpio,
         .active_level = 0,
         .enable_power_save = false,
         .disable_pull = false,
@@ -463,6 +468,23 @@ static void open_commissioning_window_if_necessary()
     if (err != CHIP_NO_ERROR) {
         ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
     }
+}
+
+static void log_boot_commissioning_state()
+{
+    auto &server = chip::Server::GetInstance();
+    auto &commission_mgr = server.GetCommissioningWindowManager();
+    const uint8_t fabric_count = server.GetFabricTable().FabricCount();
+    const bool commissioning_window_open = commission_mgr.IsCommissioningWindowOpen();
+
+    if (fabric_count > 0) {
+        ESP_LOGI(TAG, "Matter fabric config detected (%u fabric%s). Commissioning window remains closed.",
+                 fabric_count, (fabric_count == 1) ? "" : "s");
+        return;
+    }
+
+    ESP_LOGI(TAG, "No Matter fabric config detected. Commissioning window %s.",
+             commissioning_window_open ? "is open" : "is closed");
 }
 
 static void reset_discovery_after_decommission()
@@ -705,6 +727,7 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
     set_basic_information_defaults();
+    log_boot_commissioning_state();
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     // Force Router-capable behavior for better Thread mesh relay coverage.
