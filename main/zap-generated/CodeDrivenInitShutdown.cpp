@@ -33,11 +33,11 @@ void MatterClusterServerInitCallback(EndpointId endpoint, ClusterId  clusterId) 
     }
 }
 
-void MatterClusterServerShutdownCallback(EndpointId endpoint, ClusterId clusterId, MatterClusterShutdownType shutdownType) {
+void MatterClusterServerShutdownCallback(EndpointId endpoint, ClusterId clusterId) {
     switch (clusterId)
     {
     case app::Clusters::Identify::Id:
-        MatterIdentifyClusterShutdownCallback(endpoint, shutdownType);
+        MatterIdentifyClusterShutdownCallback(endpoint);
         break;
     }
 }

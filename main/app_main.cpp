@@ -25,7 +25,6 @@
 
 #include <app_openthread_config.h>
 #include <app_reset.h>
-#include <common_macros.h>
 #include <esp_matter.h>
 #include <esp_matter_attribute.h>
 #include <esp_matter_cluster.h>
@@ -54,6 +53,14 @@ static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchron
 static constexpr int kResetButtonGpio = CONFIG_WALL_ENV_RESET_BUTTON_GPIO;
 static bool s_reboot_after_decom = false;
 static bool s_decom_in_progress = false;
+
+#define ABORT_APP_ON_FAILURE(condition, log_action) \
+  do { \
+    if (!(condition)) { \
+      log_action; \
+      abort(); \
+    } \
+  } while (0)
 
 enum class decom_state_t : uint8_t {
     kIdle = 0,

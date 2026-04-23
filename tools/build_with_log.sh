@@ -7,7 +7,6 @@ LOG_PATH="${ROOT_DIR}/build/build.log"
 export IDF_CCACHE_ENABLE=1
 
 source "$HOME/esp-idf/export.sh"
-source "${ROOT_DIR}/esp-matter/export.sh"
 
 mkdir -p "${ROOT_DIR}/build"
 
