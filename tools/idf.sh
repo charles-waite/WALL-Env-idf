@@ -4,6 +4,7 @@ set -euo pipefail
 # Wrapper to run idf.py with the project environment set up.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${IDF_BUILD_DIR:-${ROOT_DIR}/build}"
 
 # Prevent overlapping idf.py runs (build/set-target/flash) from this wrapper.
 # Keep lock artifacts outside build/ so `idf.py set-target` can run fullclean
@@ -62,9 +63,9 @@ fi
 # Migration safety for older wrapper behavior:
 # if set-target sees a non-CMake build/ that is empty (or only old lock files),
 # remove it so idf.py fullclean can proceed.
-if [[ "${1:-}" == "set-target" ]] && [[ -d "${ROOT_DIR}/build" ]] && [[ ! -f "${ROOT_DIR}/build/CMakeCache.txt" ]]; then
+if [[ "${1:-}" == "set-target" ]] && [[ -d "${BUILD_DIR}" ]] && [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
     shopt -s nullglob dotglob
-    build_entries=("${ROOT_DIR}/build"/*)
+    build_entries=("${BUILD_DIR}"/*)
     shopt -u nullglob dotglob
     removable=true
     for entry in "${build_entries[@]}"; do
@@ -75,7 +76,7 @@ if [[ "${1:-}" == "set-target" ]] && [[ -d "${ROOT_DIR}/build" ]] && [[ ! -f "${
         fi
     done
     if [[ "${removable}" == "true" ]]; then
-        rm -rf "${ROOT_DIR}/build"
+        rm -rf "${BUILD_DIR}"
     fi
 fi
 
@@ -86,7 +87,7 @@ source "$HOME/esp-idf/export.sh"
 
 run_idf() {
     local -r heartbeat_secs="${IDF_HEARTBEAT_SECS:-30}"
-    idf.py -C "${ROOT_DIR}" "$@" &
+    idf.py -C "${ROOT_DIR}" -B "${BUILD_DIR}" "$@" &
     CHILD_PID=$!
 
     if [[ "${heartbeat_secs}" =~ ^[0-9]+$ ]] && [[ "${heartbeat_secs}" -gt 0 ]]; then
