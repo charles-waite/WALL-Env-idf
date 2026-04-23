@@ -12,6 +12,7 @@ _deps
 CMakeUserPresets.json
 .DS_Store
 build/*
+builds/*
 managed_components/*
 .vscode/
 main_prev/
