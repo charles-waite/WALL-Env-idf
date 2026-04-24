@@ -35,6 +35,7 @@ static const char *TAG = "bsec2_app";
 static constexpr const char *kNvsNamespace = "bsec2";
 static constexpr const char *kNvsStateKey = "state";
 static constexpr const char *kNvsTempProfileKey = "temp_profile";
+static constexpr const char *kNvsTempOffsetCentiKey = "temp_off_c";
 static constexpr int64_t kStateSaveIntervalMs = 60 * 60 * 1000; // 1 hour
 
 typedef struct {
@@ -52,14 +53,14 @@ static int64_t s_last_log_ms = 0;
 typedef struct {
     bool have_temp = false;
     bool have_humidity = false;
-    bool have_pressure = false;
     bool have_iaq = false;
     bool have_co2 = false;
+    bool have_tvoc = false;
     float temp_c = 0;
     float humidity_pct = 0;
-    float pressure_hpa = 0;
     float static_iaq = 0;
     float co2_ppm = 0;
+    float tvoc_ppm = 0;
     uint8_t iaq_accuracy = 0;
 } bsec_latest_t;
 
@@ -69,8 +70,8 @@ static portMUX_TYPE s_latest_mux = portMUX_INITIALIZER_UNLOCKED;
 static constexpr int64_t kMinPublishIntervalMs = 30000;
 static constexpr int16_t kTempDeltaCenti = 10;       // 0.10 C
 static constexpr uint16_t kHumidityDeltaCenti = 50;  // 0.50 %
-static constexpr int16_t kPressureDelta = 1;         // 1 hPa
 static constexpr float kCo2DeltaPpm = 10.0f;         // 10 ppm
+static constexpr float kTvocDeltaPpm = 0.05f;        // 0.05 ppm
 static constexpr float kDefaultTempOffsetC = CONFIG_WALL_ENV_BSEC_TEMP_OFFSET_CENTI / 100.0f;
 
 typedef struct {
@@ -85,6 +86,7 @@ static constexpr temp_profile_t kTempProfiles[] = {
 
 static const temp_profile_t *s_active_temp_profile = &kTempProfiles[1]; // v2 default
 static float s_active_temp_offset_c = kDefaultTempOffsetC;
+static bool s_active_temp_is_custom = false;
 static bool s_pending_temp_offset_apply = false;
 static bool s_temp_profile_loaded_from_nvs = false;
 
@@ -95,15 +97,15 @@ typedef struct {
 
 static publish_gate_t s_temp_gate;
 static publish_gate_t s_humidity_gate;
-static publish_gate_t s_pressure_gate;
 static publish_gate_t s_air_quality_gate;
 static publish_gate_t s_co2_gate;
+static publish_gate_t s_tvoc_gate;
 
 static int16_t s_last_temp_c_x100 = 0;
 static uint16_t s_last_humidity_x100 = 0;
-static int16_t s_last_pressure_hpa = 0;
 static uint8_t s_last_air_quality_enum = 0xFF;
 static float s_last_co2_ppm = 0;
+static float s_last_tvoc_ppm = 0;
 
 static const temp_profile_t *find_temp_profile(const char *name)
 {
@@ -125,7 +127,24 @@ static void set_active_temp_profile(const temp_profile_t *profile)
     }
     s_active_temp_profile = profile;
     s_active_temp_offset_c = profile->temp_offset_c;
+    s_active_temp_is_custom = false;
     s_pending_temp_offset_apply = true;
+}
+
+static void set_custom_temp_offset(float offset_c)
+{
+    s_active_temp_profile = nullptr;
+    s_active_temp_offset_c = offset_c;
+    s_active_temp_is_custom = true;
+    s_pending_temp_offset_apply = true;
+}
+
+static const char *active_temp_profile_name()
+{
+    if (s_active_temp_is_custom) {
+        return "custom";
+    }
+    return s_active_temp_profile ? s_active_temp_profile->name : "unknown";
 }
 
 static void save_temp_profile_nvs()
@@ -136,7 +155,19 @@ static void save_temp_profile_nvs()
         ESP_LOGW(TAG, "NVS open failed for temp profile save: %d", err);
         return;
     }
-    err = nvs_set_str(nvs, kNvsTempProfileKey, s_active_temp_profile->name);
+    const char *profile_name = active_temp_profile_name();
+    err = nvs_set_str(nvs, kNvsTempProfileKey, profile_name);
+    if (err == ESP_OK) {
+        if (s_active_temp_is_custom) {
+            const int32_t offset_centi = static_cast<int32_t>(std::lround(s_active_temp_offset_c * 100.0f));
+            err = nvs_set_i32(nvs, kNvsTempOffsetCentiKey, offset_centi);
+        } else {
+            err = nvs_erase_key(nvs, kNvsTempOffsetCentiKey);
+            if (err == ESP_ERR_NVS_NOT_FOUND) {
+                err = ESP_OK;
+            }
+        }
+    }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);
     }
@@ -144,7 +175,7 @@ static void save_temp_profile_nvs()
         ESP_LOGW(TAG, "NVS save temp profile failed: %d", err);
     } else {
         ESP_LOGI(TAG, "Temp profile saved: %s (offset %.2fC)",
-                 s_active_temp_profile->name, s_active_temp_offset_c);
+                 profile_name, s_active_temp_offset_c);
     }
     nvs_close(nvs);
 }
@@ -156,8 +187,10 @@ static void load_temp_profile_nvs()
     if (fallback) {
         s_active_temp_profile = fallback;
         s_active_temp_offset_c = fallback->temp_offset_c;
+        s_active_temp_is_custom = false;
     } else {
         s_active_temp_offset_c = kDefaultTempOffsetC;
+        s_active_temp_is_custom = false;
     }
 
     nvs_handle_t nvs = 0;
@@ -170,29 +203,44 @@ static void load_temp_profile_nvs()
     char profile_name[16] = {0};
     size_t len = sizeof(profile_name);
     err = nvs_get_str(nvs, kNvsTempProfileKey, profile_name, &len);
-    nvs_close(nvs);
 
     if (err != ESP_OK) {
+        nvs_close(nvs);
         ESP_LOGI(TAG, "Temp profile not set in NVS; using %s (%.2fC)",
-                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+                 active_temp_profile_name(),
                  s_active_temp_offset_c);
+        return;
+    }
+
+    if (strcmp(profile_name, "custom") == 0) {
+        int32_t offset_centi = 0;
+        err = nvs_get_i32(nvs, kNvsTempOffsetCentiKey, &offset_centi);
+        nvs_close(nvs);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Custom temp profile selected, but no custom offset found in NVS");
+            return;
+        }
+        set_custom_temp_offset(static_cast<float>(offset_centi) / 100.0f);
+        s_temp_profile_loaded_from_nvs = true;
+        ESP_LOGI(TAG, "Loaded temp profile: custom (offset %.2fC)", s_active_temp_offset_c);
         return;
     }
 
     const temp_profile_t *loaded = find_temp_profile(profile_name);
     if (!loaded) {
+        nvs_close(nvs);
         ESP_LOGW(TAG, "Unknown temp profile '%s' in NVS; using %s (%.2fC)",
                  profile_name,
-                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+                 active_temp_profile_name(),
                  s_active_temp_offset_c);
         return;
     }
 
-    s_active_temp_profile = loaded;
-    s_active_temp_offset_c = loaded->temp_offset_c;
+    nvs_close(nvs);
+    set_active_temp_profile(loaded);
     s_temp_profile_loaded_from_nvs = true;
     ESP_LOGI(TAG, "Loaded temp profile: %s (offset %.2fC)",
-             s_active_temp_profile->name, s_active_temp_offset_c);
+             active_temp_profile_name(), s_active_temp_offset_c);
 }
 
 bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
@@ -207,15 +255,15 @@ bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
 
     out_latest->have_temp = latest.have_temp;
     out_latest->have_humidity = latest.have_humidity;
-    out_latest->have_pressure = latest.have_pressure;
     out_latest->have_iaq = latest.have_iaq;
     out_latest->have_co2 = latest.have_co2;
+    out_latest->have_tvoc = latest.have_tvoc;
     out_latest->temp_c = latest.temp_c;
     out_latest->humidity_pct = latest.humidity_pct;
-    out_latest->pressure_hpa = latest.pressure_hpa;
     out_latest->iaq = latest.static_iaq;
     out_latest->iaq_accuracy = latest.iaq_accuracy;
     out_latest->co2_ppm = latest.co2_ppm;
+    out_latest->tvoc_ppm = latest.tvoc_ppm;
     return true;
 }
 
@@ -336,25 +384,6 @@ static void update_humidity(float humidity_pct)
     });
 }
 
-static void update_pressure(float pressure_hpa)
-{
-    const int16_t pressure_kpa_x10 = static_cast<int16_t>(pressure_hpa);
-    const bool changed = !s_pressure_gate.valid || (std::abs(pressure_kpa_x10 - s_last_pressure_hpa) >= kPressureDelta);
-    if (!publish_gate_allows(s_pressure_gate, changed)) {
-        return;
-    }
-    s_last_pressure_hpa = pressure_kpa_x10;
-
-    chip::DeviceLayer::SystemLayer().ScheduleLambda([pressure_kpa_x10]() {
-        esp_matter_attr_val_t val = esp_matter_nullable_int16(pressure_kpa_x10);
-        esp_err_t err = attribute::update(s_cfg.pressure_endpoint, PressureMeasurement::Id,
-                                          PressureMeasurement::Attributes::MeasuredValue::Id, &val);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Pressure update failed: %d", err);
-        }
-    });
-}
-
 static uint8_t map_iaq_to_enum(float iaq)
 {
     using AirQualityEnum = AirQuality::AirQualityEnum;
@@ -389,6 +418,10 @@ static void update_air_quality(float static_iaq, uint8_t accuracy)
 
 static void update_co2(float co2_ppm, uint8_t accuracy)
 {
+    if (s_cfg.co2_endpoint == 0) {
+        return;
+    }
+
     // Per Bosch behavior, eCO2 often stays pinned near 500 ppm until IAQ/eCO2 accuracy improves.
     // Publish NULL during warmup so controllers don't treat the placeholder as a valid measurement.
     if (accuracy < 1) {
@@ -419,6 +452,41 @@ static void update_co2(float co2_ppm, uint8_t accuracy)
     });
 }
 
+static void update_tvoc(float tvoc_ppm, uint8_t accuracy)
+{
+    if (s_cfg.tvoc_endpoint == 0) {
+        return;
+    }
+
+    // Keep TVOC null until BSEC has at least low confidence.
+    if (accuracy < 1) {
+        chip::DeviceLayer::SystemLayer().ScheduleLambda([]() {
+            esp_matter_attr_val_t val = esp_matter_nullable_float(nullable<float>());
+            esp_err_t err = attribute::update(s_cfg.tvoc_endpoint, TotalVolatileOrganicCompoundsConcentrationMeasurement::Id,
+                                              TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "TVOC warmup update failed: %d", err);
+            }
+        });
+        return;
+    }
+
+    const bool changed = !s_tvoc_gate.valid || (std::fabs(tvoc_ppm - s_last_tvoc_ppm) >= kTvocDeltaPpm);
+    if (!publish_gate_allows(s_tvoc_gate, changed)) {
+        return;
+    }
+    s_last_tvoc_ppm = tvoc_ppm;
+
+    chip::DeviceLayer::SystemLayer().ScheduleLambda([tvoc_ppm]() {
+        esp_matter_attr_val_t val = esp_matter_nullable_float(tvoc_ppm);
+        esp_err_t err = attribute::update(s_cfg.tvoc_endpoint, TotalVolatileOrganicCompoundsConcentrationMeasurement::Id,
+                                          TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id, &val);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "TVOC update failed: %d", err);
+        }
+    });
+}
+
 static void bsec_callback(const bme68xData data, const bsecOutputs outputs, const Bsec2 bsec)
 {
     (void) data;
@@ -441,13 +509,6 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             portEXIT_CRITICAL(&s_latest_mux);
             update_humidity(out.signal);
             break;
-        case BSEC_OUTPUT_RAW_PRESSURE:
-            portENTER_CRITICAL(&s_latest_mux);
-            s_latest.have_pressure = true;
-            s_latest.pressure_hpa = out.signal;
-            portEXIT_CRITICAL(&s_latest_mux);
-            update_pressure(out.signal);
-            break;
         case BSEC_OUTPUT_STATIC_IAQ:
             portENTER_CRITICAL(&s_latest_mux);
             s_latest.have_iaq = true;
@@ -463,6 +524,13 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             portEXIT_CRITICAL(&s_latest_mux);
             update_co2(out.signal, out.accuracy);
             break;
+        case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
+            portENTER_CRITICAL(&s_latest_mux);
+            s_latest.have_tvoc = (out.accuracy >= 1);
+            s_latest.tvoc_ppm = out.signal;
+            portEXIT_CRITICAL(&s_latest_mux);
+            update_tvoc(out.signal, out.accuracy);
+            break;
         default:
             break;
         }
@@ -476,9 +544,9 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
         const bsec_latest_t latest = s_latest;
         portEXIT_CRITICAL(&s_latest_mux);
         const float temp_f = (latest.temp_c * 9.0f / 5.0f) + 32.0f;
-        ESP_LOGI(TAG, "BSEC: T=%.2fF RH=%.2f%% P=%.2fhPa IAQ=%.1f(acc=%u) CO2=%.0fppm",
-                 temp_f, latest.humidity_pct, latest.pressure_hpa,
-                 latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm);
+        ESP_LOGI(TAG, "BSEC: T=%.2fF RH=%.2f%% IAQ=%.1f(acc=%u) CO2=%.0fppm TVOC=%.2fppm",
+                 temp_f, latest.humidity_pct,
+                 latest.static_iaq, latest.iaq_accuracy, latest.co2_ppm, latest.tvoc_ppm);
     }
 }
 
@@ -543,7 +611,7 @@ static void bsec_task(void *arg)
             s_bsec.setTemperatureOffset(s_active_temp_offset_c);
             s_pending_temp_offset_apply = false;
             ESP_LOGI(TAG, "Applied temp profile %s (offset %.2fC)",
-                     s_active_temp_profile ? s_active_temp_profile->name : "custom",
+                     active_temp_profile_name(),
                      s_active_temp_offset_c);
         }
         s_bsec.run();
@@ -595,10 +663,10 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
     s_pending_temp_offset_apply = false;
     if (s_temp_profile_loaded_from_nvs) {
         ESP_LOGI(TAG, "Device calibration set for %s.",
-                 s_active_temp_profile ? s_active_temp_profile->name : "custom");
+                 active_temp_profile_name());
     } else {
-        ESP_LOGW(TAG, "Device calibration not set. Set with 'profile <v1/v2>'. Using %s (%.2fC).",
-                 s_active_temp_profile ? s_active_temp_profile->name : "default",
+        ESP_LOGW(TAG, "Device calibration not set. Set with 'profile <v1/v2>' or 'profile custom <offsetC>'. Using %s (%.2fC).",
+                 active_temp_profile_name(),
                  s_active_temp_offset_c);
     }
 
@@ -612,9 +680,9 @@ esp_err_t bsec2_app_start(const bsec2_app_config_t *config)
     bsecSensor sensor_list[] = {
         BSEC_OUTPUT_STATIC_IAQ,
         BSEC_OUTPUT_CO2_EQUIVALENT,
+        BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
         BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
         BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
-        BSEC_OUTPUT_RAW_PRESSURE,
     };
     if (!s_bsec.updateSubscription(sensor_list, ARRAY_LEN(sensor_list), BSEC_SAMPLE_RATE_LP)) {
         ESP_LOGE(TAG, "BSEC updateSubscription failed (status=%d)", static_cast<int>(s_bsec.status));
@@ -649,9 +717,26 @@ esp_err_t bsec2_app_set_temp_profile(const char *profile_name, bool persist)
     return ESP_OK;
 }
 
+esp_err_t bsec2_app_set_temp_offset_custom(float offset_c, bool persist)
+{
+    if (std::isnan(offset_c) || std::isinf(offset_c)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (offset_c < -20.0f || offset_c > 20.0f) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    set_custom_temp_offset(offset_c);
+    s_temp_profile_loaded_from_nvs = true;
+    if (persist) {
+        save_temp_profile_nvs();
+    }
+    return ESP_OK;
+}
+
 const char *bsec2_app_get_temp_profile()
 {
-    return s_active_temp_profile ? s_active_temp_profile->name : "unknown";
+    return active_temp_profile_name();
 }
 
 float bsec2_app_get_temp_offset_c()

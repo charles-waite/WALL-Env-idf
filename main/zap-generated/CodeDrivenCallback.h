@@ -27,4 +27,4 @@
 
 void MatterIdentifyClusterInitCallback(chip::EndpointId endpointId);
 
-void MatterIdentifyClusterShutdownCallback(chip::EndpointId endpointId, MatterClusterShutdownType shutdownType);
+void MatterIdentifyClusterShutdownCallback(chip::EndpointId endpointId);

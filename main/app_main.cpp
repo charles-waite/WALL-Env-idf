@@ -25,13 +25,13 @@
 
 #include <app_openthread_config.h>
 #include <app_reset.h>
-#include <common_macros.h>
 #include <esp_matter.h>
 #include <esp_matter_attribute.h>
 #include <esp_matter_cluster.h>
 #include <esp_matter_endpoint.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <inttypes.h>
 
@@ -50,9 +50,17 @@
 
 static const char *TAG = "app_main";
 static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchronization::Id;
-static constexpr int kBootButtonGpio = 9;
+static constexpr int kResetButtonGpio = CONFIG_WALL_ENV_RESET_BUTTON_GPIO;
 static bool s_reboot_after_decom = false;
 static bool s_decom_in_progress = false;
+
+#define ABORT_APP_ON_FAILURE(condition, log_action) \
+  do { \
+    if (!(condition)) { \
+      log_action; \
+      abort(); \
+    } \
+  } while (0)
 
 enum class decom_state_t : uint8_t {
     kIdle = 0,
@@ -305,7 +313,25 @@ static void execute_serial_command(const char *cmd)
     if (strcmp(cmd, "profile") == 0) {
         ESP_LOGI(TAG, "Temp profile: %s (offset %.2fC)",
                  bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
-        ESP_LOGI(TAG, "Use: profile v1 | profile v2");
+        ESP_LOGI(TAG, "Use: profile v1 | profile v2 | profile custom <offsetC>");
+        return;
+    }
+
+    if (strncmp(cmd, "profile custom ", 15) == 0) {
+        const char *offset_str = cmd + 15;
+        char *end = nullptr;
+        float offset_c = strtof(offset_str, &end);
+        if (end == offset_str || (end && *end != '\0')) {
+            ESP_LOGW(TAG, "Invalid custom offset '%s'. Example: profile custom 4.75", offset_str);
+            return;
+        }
+        esp_err_t err = bsec2_app_set_temp_offset_custom(offset_c, true);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "Temp profile set: %s (offset %.2fC)",
+                     bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
+        } else {
+            ESP_LOGW(TAG, "Invalid custom offset %.3fC. Allowed range: -20.0 to 20.0", offset_c);
+        }
         return;
     }
 
@@ -316,7 +342,7 @@ static void execute_serial_command(const char *cmd)
             ESP_LOGI(TAG, "Temp profile set: %s (offset %.2fC)",
                      bsec2_app_get_temp_profile(), bsec2_app_get_temp_offset_c());
         } else {
-            ESP_LOGW(TAG, "Unknown profile '%s'. Valid: v1, v2", name);
+            ESP_LOGW(TAG, "Unknown profile '%s'. Valid: v1, v2, custom", name);
         }
         return;
     }
@@ -330,7 +356,7 @@ static void execute_serial_command(const char *cmd)
 
     if (strcmp(cmd, "help") == 0) {
         ESP_LOGI(TAG,
-                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, thdiag, threaddiag, help");
+                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, profile custom <offsetC>, thdiag, threaddiag, help");
         return;
     }
 
@@ -414,13 +440,18 @@ static void serial_command_task(void *arg)
 
 static esp_err_t factory_reset_button_register()
 {
+    if (kResetButtonGpio < 0) {
+        ESP_LOGI(TAG, "Factory reset button disabled by config");
+        return ESP_OK;
+    }
+
     button_handle_t push_button = nullptr;
     const button_config_t btn_cfg = {
         .long_press_time = 5000,
         .short_press_time = 180,
     };
     const button_gpio_config_t btn_gpio_cfg = {
-        .gpio_num = kBootButtonGpio,
+        .gpio_num = kResetButtonGpio,
         .active_level = 0,
         .enable_power_save = false,
         .disable_pull = false,
@@ -444,6 +475,23 @@ static void open_commissioning_window_if_necessary()
     if (err != CHIP_NO_ERROR) {
         ESP_LOGE(TAG, "Failed to open commissioning window, err:%" CHIP_ERROR_FORMAT, err.Format());
     }
+}
+
+static void log_boot_commissioning_state()
+{
+    auto &server = chip::Server::GetInstance();
+    auto &commission_mgr = server.GetCommissioningWindowManager();
+    const uint8_t fabric_count = server.GetFabricTable().FabricCount();
+    const bool commissioning_window_open = commission_mgr.IsCommissioningWindowOpen();
+
+    if (fabric_count > 0) {
+        ESP_LOGI(TAG, "Matter fabric config detected (%u fabric%s). Commissioning window remains closed.",
+                 fabric_count, (fabric_count == 1) ? "" : "s");
+        return;
+    }
+
+    ESP_LOGI(TAG, "No Matter fabric config detected. Commissioning window %s.",
+             commissioning_window_open ? "is open" : "is closed");
 }
 
 static void reset_discovery_after_decommission()
@@ -607,7 +655,7 @@ extern "C" void app_main()
     esp_matter::node_t *node = esp_matter::node::create(&node_config, app_attribute_update_cb, app_identification_cb);
     ABORT_APP_ON_FAILURE(node != nullptr, ESP_LOGE(TAG, "Failed to create Matter node"));
 
-    // Materialize sensor endpoints in esp-matter data model.
+    // Keep temperature and humidity on dedicated endpoints for better Apple Home UI mapping.
     esp_matter::endpoint::temperature_sensor::config_t temp_sensor_cfg;
     esp_matter::endpoint_t *temp_ep = esp_matter::endpoint::temperature_sensor::create(node, &temp_sensor_cfg, 0, nullptr);
     ABORT_APP_ON_FAILURE(temp_ep != nullptr, ESP_LOGE(TAG, "Failed to create temperature endpoint"));
@@ -616,13 +664,7 @@ extern "C" void app_main()
     esp_matter::endpoint_t *humidity_ep = esp_matter::endpoint::humidity_sensor::create(node, &humidity_sensor_cfg, 0, nullptr);
     ABORT_APP_ON_FAILURE(humidity_ep != nullptr, ESP_LOGE(TAG, "Failed to create humidity endpoint"));
 
-    esp_matter::endpoint::pressure_sensor::config_t pressure_sensor_cfg;
-    esp_matter::endpoint_t *pressure_ep = esp_matter::endpoint::pressure_sensor::create(node, &pressure_sensor_cfg, 0, nullptr);
-    ABORT_APP_ON_FAILURE(pressure_ep != nullptr, ESP_LOGE(TAG, "Failed to create pressure endpoint"));
-
-    // Keep AQ endpoint creation explicit in code:
-    // current esp-matter ZAP codegen does not materialize AirQuality (0x005B) in endpoint_config.h.
-    // CO2 (0x040D) is still ZAP-defined on this endpoint; AQ is added here to stay spec-aligned at runtime.
+    // Keep AQ as a dedicated Air Quality Sensor endpoint.
     esp_matter::endpoint_t *aq_ep = esp_matter::endpoint::create(node, 0, nullptr);
     ABORT_APP_ON_FAILURE(aq_ep != nullptr, ESP_LOGE(TAG, "Failed to create air-quality endpoint"));
     esp_matter::cluster::descriptor::config_t descriptor_cfg;
@@ -655,12 +697,19 @@ extern "C" void app_main()
         esp_matter::cluster::carbon_dioxide_concentration_measurement::create(aq_ep, &co2_cfg, esp_matter::CLUSTER_FLAG_SERVER);
     ABORT_APP_ON_FAILURE(co2_cluster != nullptr, ESP_LOGE(TAG, "Failed to create CO2 cluster"));
 
+    esp_matter::cluster::total_volatile_organic_compounds_concentration_measurement::config_t tvoc_cfg;
+    tvoc_cfg.feature_flags = esp_matter::cluster::concentration_measurement::feature::numeric_measurement::get_id();
+    tvoc_cfg.features.numeric_measurement.measurement_unit = 0x00; // ppm
+    esp_matter::cluster_t *tvoc_cluster =
+        esp_matter::cluster::total_volatile_organic_compounds_concentration_measurement::create(
+            aq_ep, &tvoc_cfg, esp_matter::CLUSTER_FLAG_SERVER);
+    ABORT_APP_ON_FAILURE(tvoc_cluster != nullptr, ESP_LOGE(TAG, "Failed to create TVOC cluster"));
+
     const uint16_t temp_endpoint_id = esp_matter::endpoint::get_id(temp_ep);
     const uint16_t humidity_endpoint_id = esp_matter::endpoint::get_id(humidity_ep);
-    const uint16_t pressure_endpoint_id = esp_matter::endpoint::get_id(pressure_ep);
     const uint16_t air_quality_endpoint_id = esp_matter::endpoint::get_id(aq_ep);
-    ESP_LOGI(TAG, "Sensor endpoints: temp=%u humidity=%u pressure=%u aq/co2=%u", temp_endpoint_id, humidity_endpoint_id,
-             pressure_endpoint_id, air_quality_endpoint_id);
+    ESP_LOGI(TAG, "Sensor endpoints: temp=%u humidity=%u aq/co2/tvoc=%u",
+             temp_endpoint_id, humidity_endpoint_id, air_quality_endpoint_id);
 
     // Keep Time Sync available on endpoint 0. If ZAP already instantiated this cluster,
     // create() is a no-op and returns the existing instance.
@@ -685,15 +734,15 @@ extern "C" void app_main()
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
     set_basic_information_defaults();
+    log_boot_commissioning_state();
 
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
-    // esp_matter core defaults FTD devices to Router role.
-    // Override to Full End Device so OpenThread can promote to router only if needed.
+    // Force Router-capable behavior for better Thread mesh relay coverage.
     if (chip::DeviceLayer::ConnectivityMgr().SetThreadDeviceType(
-            chip::DeviceLayer::ConnectivityManager::kThreadDeviceType_FullEndDevice) != CHIP_NO_ERROR) {
-        ESP_LOGW(TAG, "Failed to set Thread device type to FullEndDevice");
+            chip::DeviceLayer::ConnectivityManager::kThreadDeviceType_Router) != CHIP_NO_ERROR) {
+        ESP_LOGW(TAG, "Failed to set Thread device type to Router");
     } else {
-        ESP_LOGI(TAG, "Thread device type set to FullEndDevice");
+        ESP_LOGI(TAG, "Thread device type set to Router");
     }
 #endif
 
@@ -711,9 +760,9 @@ extern "C" void app_main()
     bsec2_app_config_t bsec_cfg = {
         .temp_endpoint = temp_endpoint_id,
         .humidity_endpoint = humidity_endpoint_id,
-        .pressure_endpoint = pressure_endpoint_id,
         .air_quality_endpoint = air_quality_endpoint_id,
         .co2_endpoint = air_quality_endpoint_id,
+        .tvoc_endpoint = air_quality_endpoint_id,
     };
     err = bsec2_app_start(&bsec_cfg);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));

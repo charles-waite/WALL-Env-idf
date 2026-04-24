@@ -78,9 +78,11 @@ CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT=6
 # ESP32-DevKitC Settings
 # Buttons
 
-# Disable OTA (no OTA Requestor / single-app partition layout)
+# Disable OTA requestor (single-app partition layout).
+# Keep OTA Provider cluster code enabled to satisfy esp_matter 1.4.2 managed
+# link requirements even when provider functionality is otherwise unused.
 CONFIG_ENABLE_OTA_REQUESTOR=n
-CONFIG_SUPPORT_OTA_SOFTWARE_UPDATE_PROVIDER_CLUSTER=n
+CONFIG_SUPPORT_OTA_SOFTWARE_UPDATE_PROVIDER_CLUSTER=y
 CONFIG_SUPPORT_OTA_SOFTWARE_UPDATE_REQUESTOR_CLUSTER=n
 
 # Prune optional Matter clusters we do not expose to reduce build/gen overhead.
@@ -107,6 +109,7 @@ CONFIG_SHTC3_I2C_SCL_PIN=23
 CONFIG_I2C_MASTER_FREQ_HZ=400000
 CONFIG_BME68X_I2C_ADDR=0x77
 CONFIG_WALL_ENV_BSEC_TEMP_OFFSET_CENTI=650
+CONFIG_WALL_ENV_RESET_BUTTON_GPIO=9
 
 # OLED (SH1106 I2C @ 0x3C)
 CONFIG_WALL_ENV_OLED_ENABLE=y
