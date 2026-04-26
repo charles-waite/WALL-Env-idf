@@ -4,7 +4,7 @@ set -euo pipefail
 # Wrapper to run idf.py with the project environment set up.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${IDF_BUILD_DIR:-${ROOT_DIR}/build}"
+BUILD_DIR="${IDF_BUILD_DIR:-${ROOT_DIR}/builds/xiao_esp32c6}"
 
 # Prevent overlapping idf.py runs (build/set-target/flash) from this wrapper.
 # Keep lock artifacts outside build/ so `idf.py set-target` can run fullclean
@@ -84,6 +84,68 @@ fi
 export IDF_CCACHE_ENABLE="${IDF_CCACHE_ENABLE:-1}"
 
 source "$HOME/esp-idf/export.sh"
+
+flash_existing_bin() {
+    local port="$1"
+    local flash_args_file="${BUILD_DIR}/flash_args"
+
+    if [[ ! -f "${flash_args_file}" ]]; then
+        echo "[idf.sh] flash-bin: missing ${flash_args_file}"
+        echo "[idf.sh] flash-bin: run the matching board build first, e.g. tools/build.sh"
+        return 2
+    fi
+    if [[ ! -f "${BUILD_DIR}/wall_env_idf.bin" ]]; then
+        echo "[idf.sh] flash-bin: missing ${BUILD_DIR}/wall_env_idf.bin"
+        echo "[idf.sh] flash-bin: run the matching board build first, e.g. tools/build.sh"
+        return 2
+    fi
+
+    echo "[idf.sh] flash-bin: flashing existing image from ${BUILD_DIR}"
+    echo "[idf.sh] flash-bin: no CMake/Ninja rebuild will be attempted"
+    (
+        cd "${BUILD_DIR}"
+        esptool.py --chip esp32c6 -p "${port}" -b 460800 \
+            --before default_reset --after hard_reset write_flash @flash_args
+    )
+}
+
+if [[ "${1:-}" == "flash-bin" || "${1:-}" == "force-flash" ]]; then
+    shift
+    requested_port=""
+    passthrough_args=()
+    prev=""
+    for arg in "$@"; do
+        if [[ "${arg}" == "-p" || "${arg}" == "--port" ]]; then
+            prev="${arg}"
+            continue
+        fi
+        if [[ "${prev}" == "-p" || "${prev}" == "--port" ]]; then
+            requested_port="${arg}"
+            prev=""
+            continue
+        fi
+        passthrough_args+=("${arg}")
+    done
+
+    if [[ "${#passthrough_args[@]}" -gt 0 ]]; then
+        echo "[idf.sh] flash-bin: unsupported args: ${passthrough_args[*]}"
+        echo "[idf.sh] flash-bin: supported args are only -p/--port PORT"
+        exit 2
+    fi
+
+    if [[ -n "${requested_port}" ]]; then
+        flash_existing_bin "${requested_port}"
+        exit $?
+    fi
+
+    echo "[idf.sh] flash-bin: trying /dev/cu.usbmodem1101 first..."
+    if flash_existing_bin /dev/cu.usbmodem1101; then
+        exit 0
+    fi
+    echo "[idf.sh] flash-bin: retrying with /dev/cu.usbmodem101..."
+    flash_existing_bin /dev/cu.usbmodem101
+    exit $?
+fi
 
 run_idf() {
     local -r heartbeat_secs="${IDF_HEARTBEAT_SECS:-30}"
