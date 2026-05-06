@@ -60,23 +60,24 @@ build_one() {
   fi
 
   local sdk_defaults="sdkconfig.defaults;${overlay}"
+  local build_dir="${ROOT_DIR}/builds/revisions/${rev}_esp32c6"
 
   echo "[build-revision] Building revision '${rev}' with ${overlay}"
-  "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" set-target esp32c6
-  "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" build
+  IDF_BUILD_DIR="${build_dir}" "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" set-target esp32c6
+  IDF_BUILD_DIR="${build_dir}" "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" build
 
-  local out_dir="${ROOT_DIR}/build/artifacts/${rev}"
+  local out_dir="${ROOT_DIR}/builds/artifacts/${rev}"
   mkdir -p "${out_dir}"
-  cp "${ROOT_DIR}/build/wall_env_idf.bin" "${out_dir}/wall_env_idf_${rev}.bin"
-  cp "${ROOT_DIR}/build/wall_env_idf.elf" "${out_dir}/wall_env_idf_${rev}.elf"
-  cp "${ROOT_DIR}/build/partition_table/partition-table.bin" "${out_dir}/partition-table_${rev}.bin"
-  cp "${ROOT_DIR}/build/bootloader/bootloader.bin" "${out_dir}/bootloader_${rev}.bin"
+  cp "${build_dir}/wall_env_idf.bin" "${out_dir}/wall_env_idf_${rev}.bin"
+  cp "${build_dir}/wall_env_idf.elf" "${out_dir}/wall_env_idf_${rev}.elf"
+  cp "${build_dir}/partition_table/partition-table.bin" "${out_dir}/partition-table_${rev}.bin"
+  cp "${build_dir}/bootloader/bootloader.bin" "${out_dir}/bootloader_${rev}.bin"
 
   echo "[build-revision] Artifacts exported to ${out_dir}"
 
   if [[ "${do_flash}" == "true" ]]; then
     echo "[build-revision] Flashing revision '${rev}'"
-    "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" flash
+    IDF_BUILD_DIR="${build_dir}" "${ROOT_DIR}/tools/idf.sh" -D SDKCONFIG_DEFAULTS="${sdk_defaults}" flash
   fi
 }
 

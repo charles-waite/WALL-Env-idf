@@ -123,7 +123,7 @@ This repository is a **clean-room ESP-IDF rewrite** of the WALL-Env sensor firmw
 - Optional board overlay exists for Supermini: set target with `/Users/cwaite/Documents/WALL-Env-idf/tools/set-target-esp32c6-supermini.sh` and build with `/Users/cwaite/Documents/WALL-Env-idf/tools/build-supermini.sh`.
 - Board/pin defaults for primary profile come from `/Users/cwaite/Documents/WALL-Env-idf/sdkconfig.defaults` (XIAO-style I2C pins `SDA=22`, `SCL=23`, reset button `GPIO9`).
 - Do not change these casually unless explicitly requested: `/Users/cwaite/Documents/WALL-Env-idf/sdkconfig.defaults`, `/Users/cwaite/Documents/WALL-Env-idf/sdkconfig.revisions/*.defaults`, `/Users/cwaite/Documents/WALL-Env-idf/sdkconfig.boards/*.defaults`, `/Users/cwaite/Documents/WALL-Env-idf/partitions.csv`, `/Users/cwaite/Documents/WALL-Env-idf/main/idf_component.yml`, `/Users/cwaite/Documents/WALL-Env-idf/idf_component.yml`.
-- Verification command after changes: `/Users/cwaite/Documents/WALL-Env-idf/tools/build.sh` (or board-specific build), then confirm `/Users/cwaite/Documents/WALL-Env-idf/build/wall_env_idf.bin` exists.
+- Verification command after changes: `/Users/cwaite/Documents/WALL-Env-idf/tools/build.sh` (or board-specific build), then confirm `/Users/cwaite/Documents/WALL-Env-idf/builds/xiao_esp32c6/wall_env_idf.bin` exists.
 - Failure reporting expectation: report the first root-cause compiler/runtime error with exact `file:line` (or closest location), the command run, and a one-line fix hypothesis before listing follow-on errors.
 
 ## Session Log
