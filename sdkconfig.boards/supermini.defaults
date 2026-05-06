@@ -12,3 +12,6 @@ CONFIG_SHTC3_I2C_SCL_PIN=1
 
 # Supermini profile: disable factory-reset button binding by default.
 CONFIG_WALL_ENV_RESET_BUTTON_GPIO=-1
+
+# Split Matter PID from the XIAO profile so OTA images cannot cross-flash.
+CONFIG_DEVICE_PRODUCT_ID=0x8001

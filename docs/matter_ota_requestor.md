@@ -1,0 +1,107 @@
+# Matter OTA Requestor Runbook
+
+This project uses Matter OTA Requestor over Thread/BDX with ESP-IDF dual OTA app partitions on 4 MB flash.
+
+## Partition And Fallback Model
+
+The shared XIAO and Supermini partition table has `otadata`, `ota_0`, and `ota_1`; each app slot is `0x1E0000` bytes. After this partition-table change, do a full flash or erase/reflash once. App-only flashing over the old table is not sufficient.
+
+ESP-IDF rollback is enabled with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. A newly downloaded OTA image boots as pending verify. The app marks it valid only after Matter startup and sensor startup succeed. If the app crashes, resets, or fails validation before marking itself valid, the bootloader rolls back to the previous valid app partition.
+
+## Identity And Versioning
+
+Local bring-up keeps test VID `0xFFF1`.
+
+- XIAO PID: `0x8000`
+- Supermini PID: `0x8001`
+
+Do not publish production OTA images with the test VID/PIDs. Replace them with assigned production values across `sdkconfig.defaults`, board defaults, `main/chip_project_config.h`-derived metadata, onboarding data, and OTA image headers.
+
+Software version numbers are monotonic SemVer integers:
+
+```text
+major * 10000 + minor * 100 + patch
+```
+
+For example, `1.3.0` becomes `10300`. OTA providers and requestors compare the integer, not only the display string.
+
+## Build And Package
+
+The Matter OTA image tool is vendored with esp-matter:
+
+```sh
+managed_components/espressif__esp_matter/connectedhomeip/connectedhomeip/src/app/ota_image_tool.py
+```
+
+The tool imports CHIP Python TLV helpers from the same managed component. If Python import errors occur, initialize the ESP-IDF environment first:
+
+```sh
+source "$HOME/esp-idf/export.sh"
+```
+
+Build and package OTA images:
+
+```sh
+tools/build-ota.sh xiao --version 1.3.0
+tools/build-ota.sh supermini --version 1.3.0
+```
+
+The script builds the selected board, checks that `wall_env_idf.bin` leaves at least 10% free in the `0x1E0000` OTA slot, creates the Matter OTA image header with SHA-256 digest, and prints `ota_image_tool.py show` output.
+
+Raw tool form:
+
+```sh
+python3 managed_components/espressif__esp_matter/connectedhomeip/connectedhomeip/src/app/ota_image_tool.py create \
+  -v 0xFFF1 -p 0x8000 -vn 10300 -vs 1.3.0 -da sha256 \
+  builds/xiao_esp32c6/wall_env_idf.bin \
+  builds/xiao_esp32c6/ota/wall_env_xiao_1.3.0.ota
+```
+
+Use PID `0x8001` and the Supermini build path for Supermini images.
+
+## Provider Setup
+
+Use a local `chip-tool` OTA Provider first; the same Matter provider role can later run on the Pi Zero W OTBR if it has a working CHIP tool/runtime and access to the `.ota` file.
+
+Typical provider shape:
+
+```sh
+chip-ota-provider-app \
+  --filepath builds/xiao_esp32c6/ota/wall_env_xiao_1.3.0.ota \
+  --discriminator 3841 \
+  --passcode 20202021
+```
+
+Exact binary name and options vary by CHIP build. Use local `--help` output as canonical.
+
+Commission the OTA Provider onto the same fabric as the sensor, then either write `DefaultOTAProviders` on the sensor or announce the provider. Fill in the operational Node IDs and fabric index from your controller:
+
+```sh
+chip-tool otasoftwareupdaterequestor write default-ota-providers \
+  '[{"providerNodeID": <PROVIDER_NODE_ID>, "endpoint": 0, "fabricIndex": <FABRIC_INDEX>}]' \
+  <SENSOR_NODE_ID> 0
+```
+
+Or announce the provider:
+
+```sh
+chip-tool otasoftwareupdaterequestor announce-ota-provider \
+  <PROVIDER_NODE_ID> 0 0 0xFFF1 <SENSOR_NODE_ID> 0
+```
+
+If your `chip-tool` syntax differs, run:
+
+```sh
+chip-tool otasoftwareupdaterequestor --help
+```
+
+## Validation Checklist
+
+- Full-flash once after the partition change.
+- Confirm boot logs show `otadata`, `ota_0`, `ota_1`, active partition, next OTA partition, VID/PID, and software version.
+- Confirm endpoint 0 exposes Root Node plus OTA Requestor device type, OTA Software Update Requestor server cluster, OTA Software Update Provider client cluster, and Binding.
+- Confirm the OTA image header PID matches the target board.
+- Test wrong-PID, lower/equal-version, and truncated images; the requestor should reject or fail safely.
+- During a real OTA, confirm reboot into the opposite app slot, rollback validation, and preserved Matter fabric/NVS state.
+
+Matter OTA image headers provide payload integrity through the digest. Firmware authenticity/signing is separate production hardening unless secure boot and signed images are enabled.
