@@ -61,7 +61,33 @@ Use PID `0x8001` and the Supermini build path for Supermini images.
 
 ## Provider Setup
 
-Use a local `chip-tool` OTA Provider first; the same Matter provider role can later run on the Pi Zero W OTBR if it has a working CHIP tool/runtime and access to the `.ota` file.
+The validated local setup uses Home Assistant OS Matter Server's built-in local
+OTA flow. `python-matter-server` loads local update metadata from its
+`--ota-provider-dir`, starts `chip-ota-provider-app`, commissions a temporary OTA
+Provider node into the HA fabric, announces the provider to the target node, and
+then stops the provider after the update.
+
+For the current HAOS Matter Server add-on setup:
+
+```text
+Host-visible path: /addon_configs/core_matter_server/ota
+Add-on path:       /config/ota
+Add-on argument:   --ota-provider-dir /config/ota
+```
+
+Copy the generated `.ota` and `.json` pair from `tools/build-ota.sh` into that
+directory, restart the Matter Server add-on, then use the Matter Server UI or HA
+update entity to check and install the local update.
+
+Manual `chip-tool` provider setup remains useful for isolated protocol testing,
+but it is not the primary WALL-Env deployment path.
+
+See `docs/matter_ota_release_policy.md` before publishing OTA images.
+
+## Manual Provider Reference
+
+Use this only for standalone CHIP testing outside the HA Matter Server local OTA
+flow.
 
 Typical provider shape:
 

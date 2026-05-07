@@ -268,12 +268,14 @@ static void log_ota_partition_state(const char *phase)
 static bool init_ota_requestor()
 {
 #if CONFIG_ENABLE_OTA_REQUESTOR
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
     chip::Server &server = chip::Server::GetInstance();
     s_ota_storage.Init(server.GetPersistentStorage());
     chip::SetRequestorInstance(&s_ota_requestor);
 
     CHIP_ERROR err = s_ota_requestor.Init(server, s_ota_storage, s_ota_driver, s_ota_downloader);
     if (err != CHIP_NO_ERROR) {
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
         ESP_LOGE(TAG, "Failed to initialize OTA Requestor: %" CHIP_ERROR_FORMAT, err.Format());
         return false;
     }
@@ -281,6 +283,7 @@ static bool init_ota_requestor()
     s_ota_driver.Init(&s_ota_requestor, &s_ota_image_processor);
     s_ota_image_processor.SetOTADownloader(&s_ota_downloader);
     s_ota_downloader.SetImageProcessorDelegate(&s_ota_image_processor);
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
 
     ESP_LOGI(TAG, "Matter OTA Requestor initialized on endpoint 0");
     return true;
@@ -884,7 +887,9 @@ extern "C" void app_main()
         .tvoc_endpoint = air_quality_endpoint_id,
     };
     err = bsec2_app_start(&bsec_cfg);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BSEC2 init failed (%d); continuing without sensor publishing", err);
+    }
 
     (void) confirm_ota_image_if_pending();
     log_ota_partition_state("validated");
