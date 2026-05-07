@@ -260,7 +260,7 @@ static void log_ota_partition_state(const char *phase)
 
     ESP_LOGI(TAG, "OTA %s: VID=0x%04X PID=0x%04X software=%u partition=%s offset=0x%06" PRIx32
                   " size=0x%06" PRIx32 " state=%s next=%s",
-             phase, CONFIG_DEVICE_VENDOR_ID, CONFIG_DEVICE_PRODUCT_ID, CONFIG_DEVICE_SOFTWARE_VERSION_NUMBER,
+             phase, CONFIG_DEVICE_VENDOR_ID, CONFIG_DEVICE_PRODUCT_ID, CHIP_CONFIG_SOFTWARE_VERSION_NUMBER,
              running ? running->label : "none", running ? running->address : 0, running ? running->size : 0,
              state_err == ESP_OK ? ota_img_state_str(state) : "unavailable", next ? next->label : "none");
 }

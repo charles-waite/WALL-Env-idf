@@ -25,6 +25,14 @@ major * 10000 + minor * 100 + patch
 
 For example, `1.3.0` becomes `10300`. OTA providers and requestors compare the integer, not only the display string.
 
+Version source of truth is `CMakeLists.txt`:
+
+- `PROJECT_VER`: semantic version string.
+- `PROJECT_VER_NUMBER`: Matter integer software version.
+
+`main/chip_project_config.h` derives `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING`
+from `PROJECT_VER`.
+
 ## Build And Package
 
 The Matter OTA image tool is vendored with esp-matter:
@@ -42,11 +50,18 @@ source "$HOME/esp-idf/export.sh"
 Build and package OTA images:
 
 ```sh
-tools/build-ota.sh xiao --version 1.3.0
-tools/build-ota.sh supermini --version 1.3.0
+tools/update-version.sh
+tools/build-ota.sh xiao
+tools/build-ota.sh supermini
 ```
 
-The script builds the selected board, checks that `wall_env_idf.bin` leaves at least 10% free in the `0x1E0000` OTA slot, creates the Matter OTA image header with SHA-256 digest, and prints `ota_image_tool.py show` output.
+The script reads the version from `CMakeLists.txt`, asks for confirmation,
+builds the selected board, checks that `wall_env_idf.bin` leaves at least 10%
+free in the `0x1E0000` OTA slot, creates the Matter OTA image header with
+SHA-256 digest, emits the local Matter Server JSON, and prints
+`ota_image_tool.py show` output. Use `-f` or `--force` to skip confirmation in
+automation. If `--min-version` is omitted, it defaults to `10300` so pre-OTA
+baseline firmware is excluded by applicability bounds.
 
 Raw tool form:
 
