@@ -53,6 +53,8 @@ static constexpr uint8_t kColOffset = static_cast<uint8_t>(CONFIG_WALL_ENV_OLED_
 static i2c_master_dev_handle_t s_dev = nullptr;
 static TaskHandle_t s_task = nullptr;
 static bool s_is_dimmed = false;
+static bool s_display_on = true;
+static bool s_display_forced_off_hours = false;
 static int8_t s_time_sync_state = -1; // -1 unknown, 0 unsynced, 1 synced
 static bool s_commissioning_active = true;
 static int64_t s_runtime_cycle_start_us = -1;
@@ -184,6 +186,16 @@ static esp_err_t set_contrast(uint8_t contrast)
         return err;
     }
     return send_cmd(contrast);
+}
+
+static esp_err_t set_display_power(bool on)
+{
+    const uint8_t cmd = on ? 0xAF : 0xAE; // display on/off
+    esp_err_t err = send_cmd(cmd);
+    if (err == ESP_OK) {
+        s_display_on = on;
+    }
+    return err;
 }
 
 static esp_err_t send_cmds(const uint8_t *cmds, size_t n)
@@ -489,6 +501,10 @@ static bool get_sunrise_sunset_minutes(const struct tm &local_tm, int tz_min, in
 
 static void maybe_update_day_night_contrast()
 {
+    if (s_display_forced_off_hours) {
+        return;
+    }
+
     const time_t now = time(nullptr);
     if (now <= 0) {
         if (s_time_sync_state != 0) {
@@ -539,6 +555,43 @@ static void maybe_update_day_night_contrast()
                  should_dim ? "night" : "day",
                  sunrise_min / 60, sunrise_min % 60,
                  sunset_min / 60, sunset_min % 60);
+    }
+}
+
+static void maybe_update_display_off_hours()
+{
+    // Quiet-hours schedule: OLED off from start hour until end hour (local time).
+    static constexpr int kOffStartMin = CONFIG_WALL_ENV_OLED_QUIET_HOUR_START * 60;
+    static constexpr int kOffEndMin = CONFIG_WALL_ENV_OLED_QUIET_HOUR_END * 60;
+
+    const time_t now = time(nullptr);
+    if (now <= 0) {
+        return;
+    }
+
+    struct tm local_tm = {};
+    if (!localtime_r(&now, &local_tm)) {
+        return;
+    }
+    const bool have_time = (local_tm.tm_year >= (2024 - 1900));
+    if (!have_time) {
+        return;
+    }
+
+    const int now_min = local_tm.tm_hour * 60 + local_tm.tm_min;
+    const bool should_be_off = (now_min >= kOffStartMin) || (now_min < kOffEndMin);
+    if (should_be_off == s_display_forced_off_hours) {
+        return;
+    }
+
+    if (set_display_power(!should_be_off) == ESP_OK) {
+        s_display_forced_off_hours = should_be_off;
+        ESP_LOGI(TAG, "OLED display %s by schedule (%02d:%02d local, off %02d:00-%02d:00)",
+                 should_be_off ? "OFF" : "ON",
+                 local_tm.tm_hour,
+                 local_tm.tm_min,
+                 CONFIG_WALL_ENV_OLED_QUIET_HOUR_START,
+                 CONFIG_WALL_ENV_OLED_QUIET_HOUR_END);
     }
 }
 
@@ -748,23 +801,26 @@ static void oled_task(void *arg)
     tzset();
 
     while (true) {
+        maybe_update_display_off_hours();
         maybe_update_day_night_contrast();
-        if (s_commissioning_active) {
-            s_runtime_cycle_start_us = -1;
-            draw_commissioning_screen();
-        } else {
-            const int64_t now_us = esp_timer_get_time();
-            if (s_runtime_cycle_start_us < 0) {
-                s_runtime_cycle_start_us = now_us;
-            }
-            const int64_t elapsed_us = (now_us - s_runtime_cycle_start_us) % kRuntimeCycleUs;
-            if (elapsed_us < kKirbyPhaseUs) {
-                draw_kirby_screen();
+        if (s_display_on) {
+            if (s_commissioning_active) {
+                s_runtime_cycle_start_us = -1;
+                draw_commissioning_screen();
             } else {
-                draw_runtime_screen();
+                const int64_t now_us = esp_timer_get_time();
+                if (s_runtime_cycle_start_us < 0) {
+                    s_runtime_cycle_start_us = now_us;
+                }
+                const int64_t elapsed_us = (now_us - s_runtime_cycle_start_us) % kRuntimeCycleUs;
+                if (elapsed_us < kKirbyPhaseUs) {
+                    draw_kirby_screen();
+                } else {
+                    draw_runtime_screen();
+                }
             }
+            (void) flush_fb();
         }
-        (void) flush_fb();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

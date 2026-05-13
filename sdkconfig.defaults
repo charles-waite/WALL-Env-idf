@@ -120,6 +120,8 @@ CONFIG_WALL_ENV_OLED_COL_OFFSET=2
 CONFIG_WALL_ENV_OLED_WIDTH=128
 CONFIG_WALL_ENV_OLED_HEIGHT=64
 CONFIG_WALL_ENV_OLED_SPLASH_MS=5000
+CONFIG_WALL_ENV_OLED_QUIET_HOUR_START=22
+CONFIG_WALL_ENV_OLED_QUIET_HOUR_END=6
 
 # Device identity + versioning (derived from main/chip_project_config.h)
 # Software version integer uses SemVer: major*10000 + minor*100 + patch.

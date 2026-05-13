@@ -82,6 +82,22 @@ menu "Example Configuration"
         help
             How long to display the splash screen on boot, in milliseconds.
 
+    config WALL_ENV_OLED_QUIET_HOUR_START
+        int "OLED quiet-hours start (local hour, 0-23)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 22
+        range 0 23
+        help
+            Local-time hour when OLED turns off for quiet-hours.
+
+    config WALL_ENV_OLED_QUIET_HOUR_END
+        int "OLED quiet-hours end (local hour, 0-23)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 6
+        range 0 23
+        help
+            Local-time hour when OLED turns back on after quiet-hours.
+
     config PIR_DATA_PIN
         int "PIR Data Pin"
         default 7
