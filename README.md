@@ -171,9 +171,7 @@ OLED behavior:
 
 - Boot splash for `CONFIG_WALL_ENV_OLED_SPLASH_MS` milliseconds.
 - QR-only screen while uncommissioned.
-- After commissioning, runtime screen rotation is controlled by:
-- `CONFIG_WALL_ENV_OLED_KIRBY_SECONDS` (default `15`)
-- `CONFIG_WALL_ENV_OLED_SENSOR_SECONDS` (default `15`)
+- After commissioning, 15 seconds of bitmap display followed by 15 seconds of sensor data and time and date.
 - Time/date line on the sensor page.
 - Unsynced time is marked visually until Matter time sync has populated the system clock.
 - Quiet hours turn the display off from `CONFIG_WALL_ENV_OLED_QUIET_HOUR_START` to `CONFIG_WALL_ENV_OLED_QUIET_HOUR_END`.
