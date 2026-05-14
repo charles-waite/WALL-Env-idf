@@ -1,55 +1,53 @@
 # WALL-Env ESP-IDF Environmental Sensor
 
-A compact, Matter-over-Thread environmental monitoring module built around ESP32-C6 boards and a Bosch BME680 sensor.
+### A compact, Matter-over-Thread environmental monitoring module built around ESP32-C6 boards and a Bosch BME680 sensor. 
+It is compatible with both **Apple Home** and **Home Assistant** but requires a Thread-capable Matter controller in order to work. Apple TV 4K (2nd/3rd Gen Wi-Fi+Ethernet), HomePod (2nd Gen), and HomePod mini are all compatible.
 
-This repository is the native ESP-IDF + esp-matter rewrite of the earlier Arduino/ESP-IDF WALL-Env firmware. It is not a fork of that project. The goal is a cleaner firmware stack with direct ownership of Matter behavior, predictable endpoint definitions, board-specific build outputs, OTA packaging, and less Arduino-layer coupling.
+This repository is a rewrite of the earlier [Arduino/ESP-IDF WALL-Env firmware](https://github.com/charles-waite/ESP32-Matter-Environmental-Sensor) using native ESP-IDF + esp-matter. The goal is a cleaner codebase with better Matter integration, support for Matter over Thread, board-specific build outputs, and OTA firmware update support.
 
----
+
 
 ## 📦 Overview
 
-WALL-Env measures indoor environmental conditions using a Bosch BME680 with Bosch BSEC2 compensation. The active firmware publishes temperature, relative humidity, air quality, CO2 equivalent, and TVOC through Matter over Thread.
+WALL-Env measures indoor environmental conditions using a Bosch BME680 with Bosch's BSEC2 library calculating accurate sensor data. The device publishes temperature, relative humidity, air quality, CO2 equivalent, and TVOC through Matter over Thread.
 
-An optional 1.3" SH1106 OLED shows commissioning and local status. When the device is uncommissioned, the OLED displays the Matter QR code only. After commissioning, it alternates between a Kirby bitmap screen and sensor data. Headless devices are supported; OLED initialization failures are logged but do not stop Matter or sensor operation.
+Optional support for a 1.3" SH1106 OLED connected via I2C shows commissioning and local status. When the device is uncommissioned, the OLED displays the Matter QR code for simple pairing to Apple Home or Home Assistant.
 
-The firmware is Thread-only. BLE is used for Matter commissioning, and operational traffic runs over Thread.
+The firmware is Thread-only. BLE is used for Matter commissioning using an iPhone or iPad using Apple Home or the Home Assistant app. Sensor data and communication runs over Thread.
 
----
+
 
 ## 🧰 Hardware
 
 | Component | Description / Notes |
-|------------|--------------------|
+|-----------------|---------------|
 | **Seeed Studio XIAO ESP32-C6** | Primary board target. Uses 4 MB flash and default XIAO-style I2C pins. |
+| *OR* | | 
 | **Generic ESP32-C6 Supermini** | Secondary board profile with separate I2C pins and Product ID. |
-| **Bosch BME680 / BME68x** | Environmental sensor used with BSEC2 for compensated temperature, humidity, s-IAQ, eCO2, and bVOC/TVOC. Connected over I2C at `0x77`. |
-| **Optional: SH1106 OLED Display (1.3")** | Local display connected over I2C at `0x3C`. Current driver assumes a 128x64 panel with a 2-pixel SH1106 column offset. |
-| **USB power source** | Designed for always-on USB power. The firmware configures the node as Thread router-capable. |
+| **Bosch BME680** | Environmental sensor used with BSEC2 for compensated temperature, humidity, s-IAQ, eCO2, and bVOC/TVOC. Connected over I2C at `0x77`. |
+| **Optional: 1.3" OLED display"** | Local display connected over I2C at `0x3C`. Current driver assumes a 128x64 panel with a 2-pixel SH1106 column offset. |
+| **Standard Apple 5w USB charger** | Designed for always-on USB power. The firmware configures the node as Thread router-capable. |
 
-**Default XIAO wiring**
+###Default XIAO wiring
 
-| XIAO ESP32-C6 Pin | Signal | BME680 Pin | OLED Pin (optional) | Notes |
-|--------------------|---------|-------------|----------------------|-------|
-| **GPIO22 / D4** | SDA | SDA | SDA | I2C data line |
-| **GPIO23 / D5** | SCL | SCL | SCL | I2C clock line |
-| **3V3** | 3.3 V | VIN | VCC | Power supply |
-| **GND** | Ground | GND | GND | Common ground |
-| **GPIO9** | Button | - | - | Factory reset button on the XIAO profile |
+| XIAO ESP32-C6 Pin | Signal |
+|--------------------|---------|
+| GPIO22 / D4 | SDA |
+| GPIO23 / D5 | SCL |
+| 3V3 | 3.3 V out |
+| GND | Ground |
+###Default Supermini wiring
 
-**Supermini profile**
+| Supermini Pin | Signal |
+|------------------|---------|
+| GPIO0 | SDA |
+| GPIO1 | SCL |
+| 3V3 | 3.3 V out |
+| GND | Ground |
 
-The Supermini overlay uses:
 
-```text
-SDA = GPIO0
-SCL = GPIO1
-Factory reset button disabled
-Product ID = 0x8001
-```
 
----
-
-## 🧩 Firmware & Tooling
+##🧩 Firmware & Tooling
 
 The firmware uses native **ESP-IDF**, Espressif **esp-matter**, OpenThread, and Bosch **BSEC2**. Arduino is not used.
 
@@ -57,14 +55,13 @@ The firmware uses native **ESP-IDF**, Espressif **esp-matter**, OpenThread, and 
 
 - Matter over Thread, with BLE commissioning.
 - Thread router-capable configuration for mains-powered operation.
-- BME680 via BSEC2 in low-power mode.
-- Temperature and humidity on dedicated Matter sensor endpoints.
-- Air Quality, CO2 concentration, and TVOC concentration on a dedicated Air Quality endpoint.
-- Matter Time Synchronization cluster on endpoint 0.
-- Matter OTA Requestor with dual OTA app partitions and rollback validation.
-- BSEC2 state persistence in NVS after IAQ accuracy is high enough.
-- Persistent temperature calibration profiles set from serial.
-- Optional SH1106 OLED UI with commissioning QR code, sensor page, Kirby screen, and quiet-hours display-off behavior.
+- BME680 sensor providing accurate Temperature, Humidity, Air Quality, CO2 concentration, and TVOC measurements.
+- Accuraacty compensation done via BSEC2 in low-power mode.
+- Matter Time Synchronization for automated time sync.
+- Partial Matter OTA support.
+- BSEC2 compensation state saves to internal storage.
+- Temperature calibration configurable via Serial.
+- Optional 1.3" OLED UI with commissioning QR code, live sensor data, bitmap graphic support, time-based dimming and configurable display-off schedule.
 - Serial diagnostics and commands over USB Serial/JTAG.
 
 **Key project files**
@@ -89,24 +86,24 @@ The firmware uses native **ESP-IDF**, Espressif **esp-matter**, OpenThread, and 
 - `components/BME68x_Sensor_library`
 - `components/app_reset`
 
----
 
 ## 🧱 3D Printed Enclosure
 
-The enclosure files are kept in `enclosure/`.
+The enclosure files are kept in `enclosure/`. These STL files are intended to take a standard 5W Apple USB charger with an integrated mount for a male USB-A plug that can be wired to a small male usb-C plug to the board. Serial and firmware updates can be managed through this usb-A plug using a female to male adapter. The lids are designed to securely attach using 3x2mm neodymium magnets embedded in the case and lid itself.
 
 **Current files**
-
+Main enclosure body:
 - `enclosure/Main Housing - Main Housing.stl`
+
 - `enclosure/Solid Lid - Lid - Solid.stl`
 
-The OLED case lid and OLED retaining bracket designs are still a work in progress and are intentionally not treated as final release assets yet.
+> The OLED case lid and OLED retaining bracket designs are still a work in progress and are intentionally not treated as final release assets yet. Will be comleted and released very soon!
 
----
+
 
 ## 🔌 Build, Flash, Monitor
 
-Prefer the repository wrapper scripts. They set the ESP-IDF environment, use the correct build directories, enable ccache when available, add heartbeat logging for long builds, and avoid overlapping `idf.py` runs.
+To aid in build and evnironment setup, there are a number of helper scripts included in the `tools/` directory. They set the ESP-IDF environment, use the correct build directories, enable ccache when available, add heartbeat logging for long builds, and avoid overlapping `idf.py` runs.
 
 **XIAO ESP32-C6**
 
@@ -145,7 +142,7 @@ tools/idf.sh flash-bin
 
 This uses the existing build artifacts and skips CMake/Ninja rebuild checks.
 
----
+
 
 ## 📡 Matter, Thread, and Endpoints
 
@@ -164,7 +161,7 @@ ZAP artifacts live in `wall_env.zap` and `main/zap-generated/`. Runtime code sti
 
 The firmware prints onboarding QR and manual pairing codes on every boot. If an OLED is present and the device is uncommissioned, the QR code is shown on the display.
 
----
+
 
 ## 🕒 Time and Display Behavior
 
@@ -182,11 +179,11 @@ OLED behavior:
 Current default quiet hours:
 
 ```text
-Off: 22:00 local time
-On:  06:00 local time
+Screen Off: 10:00 PM local time
+Screen On:  6:00 AM local time
 ```
 
----
+
 
 ## 🧪 Sensor Calibration and State
 
@@ -200,9 +197,18 @@ profile v2
 profile custom <offsetC>
 ```
 
-The selected profile survives normal reboot, firmware flash, and Matter decommissioning. It is cleared by erase-flash.
+**Profile v1** is deprecated and designed for the prior V1 enclosure design. 
 
----
+**Profile v2** is *enabled by default* and is intended for the V2 enclosure design with better airflow and thus lower temperature compensation. 
+
+**Profile Custom** allows you to set a custom offset. A positive integer results in a lower temperature reading. ie. `profile custom 5` will result in a raw measured temperature of 50°C to display as 45° C. The temperature offset will alter the BSEC compensation values for RH and IAQ across the board and is critical to overall accuracy.
+
+The selected offset profile or custom value survives normal reboot, firmware flash, and Matter decommissioning. It is only cleared by erase-flash.
+
+There is no significant difference in measured temperature with or without the OLED installed.
+
+
+
 
 ## ⌨️ Serial Commands
 
@@ -222,13 +228,13 @@ thdiag
 threaddiag
 ```
 
-`decom` removes Matter fabrics and schedules a reboot so stale operational sessions and discovery state are cleared.
+`decom` and `decommission` removes Matter fabrics and schedules a reboot so stale operational sessions and discovery state are cleared.
 
----
 
-## 🔄 OTA and Release Packaging
 
-The current partition table uses dual OTA slots on 4 MB ESP32-C6 modules:
+## 🔄 OTA Update and Release Packaging
+
+The current partition table uses dual OTA slots on 4 MB ESP32-C6 modules and is the same for both the XIAO and generic Supermini Boards: 
 
 ```text
 ota_0: 0x20000,  0x1E0000
@@ -238,8 +244,9 @@ ota_1: 0x200000, 0x1E0000
 Build Matter OTA images with:
 
 ```sh
-tools/build-ota.sh xiao
-tools/build-ota.sh supermini
+./tools/build-ota.sh xiao
+
+./tools/build-ota.sh supermini
 ```
 
 The OTA script:
@@ -253,8 +260,8 @@ The OTA script:
 Package a full "flash one file" image with:
 
 ```sh
-tools/package-release.sh xiao
-tools/package-release.sh supermini
+./tools/package-release.sh xiao
+./tools/package-release.sh supermini
 ```
 
 Release and OTA process notes live in:
@@ -262,7 +269,7 @@ Release and OTA process notes live in:
 - `docs/matter_ota_requestor.md`
 - `docs/matter_ota_release_policy.md`
 
----
+
 
 ## 🆔 Device Identity
 
@@ -290,7 +297,7 @@ The Matter software version number uses:
 major * 10000 + minor * 100 + patch
 ```
 
----
+
 
 ## 🗂️ Repository Layout
 
@@ -307,6 +314,5 @@ major * 10000 + minor * 100 + patch
 
 ---
 
-## 📜 License
 
 MIT License © 2025 [CP Waite](https://github.com/charles-waite)
