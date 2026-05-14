@@ -60,8 +60,8 @@ static bool s_commissioning_active = true;
 static int64_t s_runtime_cycle_start_us = -1;
 static char s_qr_code[128] = {0};
 static char s_manual_code[32] = {0};
-static constexpr int64_t kKirbyPhaseUs = 25LL * 1000LL * 1000LL;
-static constexpr int64_t kSensorPhaseUs = 5LL * 1000LL * 1000LL;
+static constexpr int64_t kKirbyPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_KIRBY_SECONDS) * 1000LL * 1000LL;
+static constexpr int64_t kSensorPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_SENSOR_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kRuntimeCycleUs = kKirbyPhaseUs + kSensorPhaseUs;
 
 static uint8_t s_fb[kWidth * kPages];

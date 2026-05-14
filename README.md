@@ -165,13 +165,15 @@ The firmware prints onboarding QR and manual pairing codes on every boot. If an 
 
 ## 🕒 Time and Display Behavior
 
-Matter Time Synchronization is exposed on endpoint 0. Time can take several minutes to arrive after a cold boot or recommissioning, so the OLED treats early epoch values as unsynced.
+Matter Time Synchronization is enabled and will allow the device to set an accurate time using your Matter controller. Time sync can take quite a while to activate cold boot or recommissioning, so the OLED treats unverified time values as unsynced until it confirms a successful time sync has occurred.
 
 OLED behavior:
 
 - Boot splash for `CONFIG_WALL_ENV_OLED_SPLASH_MS` milliseconds.
 - QR-only screen while uncommissioned.
-- After commissioning, 25 seconds of Kirby followed by 5 seconds of sensor data.
+- After commissioning, runtime screen rotation is controlled by:
+- `CONFIG_WALL_ENV_OLED_KIRBY_SECONDS` (default `15`)
+- `CONFIG_WALL_ENV_OLED_SENSOR_SECONDS` (default `15`)
 - Time/date line on the sensor page.
 - Unsynced time is marked visually until Matter time sync has populated the system clock.
 - Quiet hours turn the display off from `CONFIG_WALL_ENV_OLED_QUIET_HOUR_START` to `CONFIG_WALL_ENV_OLED_QUIET_HOUR_END`.
@@ -241,6 +243,26 @@ ota_0: 0x20000,  0x1E0000
 ota_1: 0x200000, 0x1E0000
 ```
 
+Before building a release or OTA image, update the firmware version with:
+
+```sh
+./tools/update-version.sh
+```
+
+The script prompts for a semantic version in `X.Y.Z` format, then updates the version fields used by ESP-IDF and Matter:
+
+- `CMakeLists.txt` `PROJECT_VER`
+- `CMakeLists.txt` `PROJECT_VER_NUMBER`
+- `main/chip_project_config.h` `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING`
+
+`PROJECT_VER_NUMBER` is calculated automatically using:
+
+```text
+major * 10000 + minor * 100 + patch
+```
+
+For example, `1.3.3` becomes `10303`. After changing the version, rebuild each board profile so the generated firmware, OTA headers, and release artifacts all carry the same version.
+
 Build Matter OTA images with:
 
 ```sh
@@ -256,6 +278,7 @@ The OTA script:
 - Wraps the app binary with the Matter OTA image header.
 - Emits the `.ota` file and Home Assistant Matter Server local OTA `.json`.
 - Uses board-specific Product IDs so XIAO and Supermini updates do not cross-apply.
+- Fails if the compiled Matter software version does not match the version from `CMakeLists.txt` and `main/chip_project_config.h`.
 
 Package a full "flash one file" image with:
 
@@ -263,6 +286,8 @@ Package a full "flash one file" image with:
 ./tools/package-release.sh xiao
 ./tools/package-release.sh supermini
 ```
+
+`package-release.sh` reads the default version from `CMakeLists.txt` and writes merged full-flash images under `builds/releases/<version>/`.
 
 Release and OTA process notes live in:
 
@@ -284,11 +309,12 @@ Current development IDs:
 
 `0xFFF1` is a test Vendor ID. Do not use the development VID/PIDs for production distribution.
 
-Version source of truth is `CMakeLists.txt`:
+Version source of truth is updated through `tools/update-version.sh`, which keeps the CMake and Matter identity fields aligned:
 
 ```text
 PROJECT_VER
 PROJECT_VER_NUMBER
+CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING
 ```
 
 The Matter software version number uses:

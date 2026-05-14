@@ -61,11 +61,17 @@ Rules:
 
 Version source files:
 
-- `CMakeLists.txt` is the only source of truth for release versioning.
+- `tools/update-version.sh` is the supported way to change release versioning.
 - `PROJECT_VER` sets the semantic software version string.
 - `PROJECT_VER_NUMBER` sets the Matter numeric software version.
-- `main/chip_project_config.h` must derive
-  `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING` from `PROJECT_VER`.
+- `main/chip_project_config.h` must keep
+  `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING` aligned with
+  `PROJECT_VER`.
+
+`tools/update-version.sh` prompts for an `X.Y.Z` version, updates
+`CMakeLists.txt`, updates `main/chip_project_config.h`, and computes the Matter
+integer software version as `major * 10000 + minor * 100 + patch`. Rebuild every
+target board after running it.
 
 ## OTA-Compatible Changes
 

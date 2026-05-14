@@ -82,6 +82,22 @@ menu "Example Configuration"
         help
             How long to display the splash screen on boot, in milliseconds.
 
+    config WALL_ENV_OLED_KIRBY_SECONDS
+        int "OLED Kirby screen duration (seconds)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 15
+        range 1 3600
+        help
+            Number of seconds to show the Kirby screen during each runtime cycle.
+
+    config WALL_ENV_OLED_SENSOR_SECONDS
+        int "OLED sensor screen duration (seconds)"
+        depends on WALL_ENV_OLED_ENABLE
+        default 15
+        range 1 3600
+        help
+            Number of seconds to show the sensor data screen during each runtime cycle.
+
     config WALL_ENV_OLED_QUIET_HOUR_START
         int "OLED quiet-hours start (local hour, 0-23)"
         depends on WALL_ENV_OLED_ENABLE

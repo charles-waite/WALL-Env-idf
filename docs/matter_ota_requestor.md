@@ -30,8 +30,17 @@ Version source of truth is `CMakeLists.txt`:
 - `PROJECT_VER`: semantic version string.
 - `PROJECT_VER_NUMBER`: Matter integer software version.
 
-`main/chip_project_config.h` derives `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING`
-from `PROJECT_VER`.
+Use `tools/update-version.sh` to change release versions. It prompts for an
+`X.Y.Z` semantic version, computes `PROJECT_VER_NUMBER` as
+`major * 10000 + minor * 100 + patch`, and updates:
+
+- `CMakeLists.txt` `PROJECT_VER`
+- `CMakeLists.txt` `PROJECT_VER_NUMBER`
+- `main/chip_project_config.h` `CHIP_DEVICE_CONFIG_DEVICE_SOFTWARE_VERSION_STRING`
+
+Do not edit only one of these fields by hand. `tools/build-ota.sh` verifies that
+the compiled Matter software version, CMake version, and OTA header version all
+match before it writes an OTA image.
 
 ## Build And Package
 
