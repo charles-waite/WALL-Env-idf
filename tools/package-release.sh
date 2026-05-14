@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BOARD="${1:-xiao}"
-VERSION="${2:-v1.2}"
+DEFAULT_VERSION="$(sed -n 's/^set(PROJECT_VER "\([^"]*\)")$/\1/p' "${ROOT_DIR}/CMakeLists.txt" | head -n 1)"
+VERSION="${2:-${DEFAULT_VERSION}}"
 
 case "${BOARD}" in
   xiao|xiao_esp32c6)
@@ -24,11 +25,12 @@ esac
 BOOTLOADER="${BUILD_DIR}/bootloader/bootloader.bin"
 PARTITION_TABLE="${BUILD_DIR}/partition_table/partition-table.bin"
 APP="${BUILD_DIR}/wall_env_idf.bin"
+OTA_DATA="${BUILD_DIR}/ota_data_initial.bin"
 OUT_DIR="${ROOT_DIR}/builds/releases/${VERSION}"
 OUT_BIN="${OUT_DIR}/wall_env_${BOARD}_${VERSION}.bin"
 OUT_README="${OUT_DIR}/README_${BOARD}_${VERSION}.txt"
 
-for file in "${BOOTLOADER}" "${PARTITION_TABLE}" "${APP}"; do
+for file in "${BOOTLOADER}" "${PARTITION_TABLE}" "${OTA_DATA}" "${APP}"; do
   if [[ ! -f "${file}" ]]; then
     echo "[package-release] Missing required build artifact: ${file}"
     echo "[package-release] Run the matching board build first."
@@ -48,6 +50,7 @@ esptool.py --chip esp32c6 merge_bin \
   --output "${OUT_BIN}" \
   0x0 "${BOOTLOADER}" \
   0xc000 "${PARTITION_TABLE}" \
+  0x1d000 "${OTA_DATA}" \
   0x20000 "${APP}"
 
 cat > "${OUT_README}" <<README
@@ -62,6 +65,7 @@ macOS example:
 This merged image contains:
   0x0     bootloader.bin
   0xc000  partition-table.bin
+  0x1d000 ota_data_initial.bin
   0x20000 wall_env_idf.bin
 README
 

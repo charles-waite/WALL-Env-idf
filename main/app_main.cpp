@@ -9,14 +9,22 @@
 #include <app/server/CommissioningWindowManager.h>
 #include <app/server/Dnssd.h>
 #include <app/server/Server.h>
+#include <app/clusters/ota-requestor/BDXDownloader.h>
+#include <app/clusters/ota-requestor/DefaultOTARequestor.h>
+#include <app/clusters/ota-requestor/DefaultOTARequestorDriver.h>
+#include <app/clusters/ota-requestor/DefaultOTARequestorStorage.h>
+#include <app/clusters/ota-requestor/OTARequestorInterface.h>
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
+#include <lib/core/CHIPError.h>
+#include <platform/ESP32/OTAImageProcessorImpl.h>
 #include <platform/ConnectivityManager.h>
 #include <platform/ThreadStackManager.h>
 #include <button_gpio.h>
 #include <iot_button.h>
 #include <esp_err.h>
 #include <esp_log.h>
+#include <esp_ota_ops.h>
 #include <esp_system.h>
 #include <driver/usb_serial_jtag.h>
 #include <freertos/FreeRTOS.h>
@@ -53,6 +61,14 @@ static constexpr uint32_t kTimeSyncClusterId = chip::app::Clusters::TimeSynchron
 static constexpr int kResetButtonGpio = CONFIG_WALL_ENV_RESET_BUTTON_GPIO;
 static bool s_reboot_after_decom = false;
 static bool s_decom_in_progress = false;
+
+#if CONFIG_ENABLE_OTA_REQUESTOR
+static chip::DefaultOTARequestor s_ota_requestor;
+static chip::DeviceLayer::DefaultOTARequestorDriver s_ota_driver;
+static chip::DefaultOTARequestorStorage s_ota_storage;
+static chip::BDXDownloader s_ota_downloader;
+static chip::OTAImageProcessorImpl s_ota_image_processor;
+#endif
 
 #define ABORT_APP_ON_FAILURE(condition, log_action) \
   do { \
@@ -213,6 +229,109 @@ static bool init_time_sync_cluster(esp_matter::node_t *node)
     esp_matter::cluster_t *cluster =
         esp_matter::cluster::time_synchronization::create(root, &cfg, esp_matter::CLUSTER_FLAG_SERVER);
     return cluster != nullptr;
+}
+
+static const char *ota_img_state_str(esp_ota_img_states_t state)
+{
+    switch (state) {
+    case ESP_OTA_IMG_NEW:
+        return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY:
+        return "pending_verify";
+    case ESP_OTA_IMG_VALID:
+        return "valid";
+    case ESP_OTA_IMG_INVALID:
+        return "invalid";
+    case ESP_OTA_IMG_ABORTED:
+        return "aborted";
+    case ESP_OTA_IMG_UNDEFINED:
+        return "undefined";
+    default:
+        return "unknown";
+    }
+}
+
+static void log_ota_partition_state(const char *phase)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    esp_err_t state_err = running ? esp_ota_get_state_partition(running, &state) : ESP_ERR_NOT_FOUND;
+
+    ESP_LOGI(TAG, "OTA %s: VID=0x%04X PID=0x%04X software=%u partition=%s offset=0x%06" PRIx32
+                  " size=0x%06" PRIx32 " state=%s next=%s",
+             phase, CONFIG_DEVICE_VENDOR_ID, CONFIG_DEVICE_PRODUCT_ID, CHIP_CONFIG_SOFTWARE_VERSION_NUMBER,
+             running ? running->label : "none", running ? running->address : 0, running ? running->size : 0,
+             state_err == ESP_OK ? ota_img_state_str(state) : "unavailable", next ? next->label : "none");
+}
+
+static bool init_ota_requestor()
+{
+#if CONFIG_ENABLE_OTA_REQUESTOR
+    chip::DeviceLayer::PlatformMgr().LockChipStack();
+    chip::Server &server = chip::Server::GetInstance();
+    s_ota_storage.Init(server.GetPersistentStorage());
+    chip::SetRequestorInstance(&s_ota_requestor);
+
+    CHIP_ERROR err = s_ota_requestor.Init(server, s_ota_storage, s_ota_driver, s_ota_downloader);
+    if (err != CHIP_NO_ERROR) {
+        chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+        ESP_LOGE(TAG, "Failed to initialize OTA Requestor: %" CHIP_ERROR_FORMAT, err.Format());
+        return false;
+    }
+
+    s_ota_driver.Init(&s_ota_requestor, &s_ota_image_processor);
+    s_ota_image_processor.SetOTADownloader(&s_ota_downloader);
+    s_ota_downloader.SetImageProcessorDelegate(&s_ota_image_processor);
+    chip::DeviceLayer::PlatformMgr().UnlockChipStack();
+
+    ESP_LOGI(TAG, "Matter OTA Requestor initialized on endpoint 0");
+    return true;
+#else
+    ESP_LOGI(TAG, "Matter OTA Requestor disabled by sdkconfig");
+    return true;
+#endif
+}
+
+static bool confirm_ota_image_if_pending()
+{
+#if CONFIG_ENABLE_OTA_REQUESTOR
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) {
+        ESP_LOGW(TAG, "OTA rollback validation skipped: no running partition");
+        return false;
+    }
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    esp_err_t state_err = esp_ota_get_state_partition(running, &state);
+    if (state_err != ESP_OK) {
+        ESP_LOGW(TAG, "OTA rollback validation skipped: state read failed err=%d", state_err);
+        return false;
+    }
+
+    if (state != ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGI(TAG, "OTA rollback validation not required: state=%s", ota_img_state_str(state));
+        return true;
+    }
+
+    CHIP_ERROR confirm_err = s_ota_image_processor.ConfirmCurrentImage();
+    if (confirm_err != CHIP_NO_ERROR) {
+        ESP_LOGE(TAG, "OTA image confirmation failed; leaving image pending for rollback: %" CHIP_ERROR_FORMAT,
+                 confirm_err.Format());
+        return false;
+    }
+
+    esp_err_t mark_err = esp_ota_mark_app_valid_cancel_rollback();
+    if (mark_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mark OTA image valid: %d", mark_err);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "OTA image marked valid; rollback cancelled");
+    return true;
+#else
+    return true;
+#endif
 }
 
 static void set_basic_information_defaults()
@@ -733,6 +852,9 @@ extern "C" void app_main()
     err = esp_matter::start(app_event_cb);
     ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "Failed to start Matter, err:%d", err));
 
+    ABORT_APP_ON_FAILURE(init_ota_requestor(), ESP_LOGE(TAG, "Failed to initialize OTA Requestor"));
+    log_ota_partition_state("boot");
+
     set_basic_information_defaults();
     log_boot_commissioning_state();
 
@@ -765,5 +887,10 @@ extern "C" void app_main()
         .tvoc_endpoint = air_quality_endpoint_id,
     };
     err = bsec2_app_start(&bsec_cfg);
-    ABORT_APP_ON_FAILURE(err == ESP_OK, ESP_LOGE(TAG, "BSEC2 init failed"));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "BSEC2 init failed (%d); continuing without sensor publishing", err);
+    }
+
+    (void) confirm_ota_image_if_pending();
+    log_ota_partition_state("validated");
 }
