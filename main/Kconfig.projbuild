@@ -98,6 +98,15 @@ menu "Example Configuration"
         help
             Number of seconds to show the sensor data screen during each runtime cycle.
 
+    config WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT
+        bool "Enable OLED bitmap alternation by default"
+        depends on WALL_ENV_OLED_ENABLE
+        default y
+        help
+            Start the runtime OLED UI by alternating the selected bitmap with
+            sensor data. Disable this to boot directly to the sensor data screen;
+            the runtime serial command can still turn alternation back on.
+
     config WALL_ENV_OLED_QUIET_HOUR_START
         int "OLED quiet-hours start (local hour, 0-23)"
         depends on WALL_ENV_OLED_ENABLE

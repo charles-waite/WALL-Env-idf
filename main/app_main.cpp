@@ -466,6 +466,43 @@ static void execute_serial_command(const char *cmd)
         return;
     }
 
+    if (strcmp(cmd, "oled") == 0 || strcmp(cmd, "oled status") == 0) {
+        ESP_LOGI(TAG, "OLED bitmap alternation: %s, bitmap: %s",
+                 oled_sh1106_get_bitmap_alternation_enabled() ? "on" : "off",
+                 oled_sh1106_get_selected_bitmap_name());
+        ESP_LOGI(TAG, "Use: oled alt toggle | oled alt on | oled alt off | oled bitmap <name>");
+        return;
+    }
+
+    if (strcmp(cmd, "oled alt") == 0 || strcmp(cmd, "oled alt toggle") == 0) {
+        const bool enabled = oled_sh1106_toggle_bitmap_alternation();
+        ESP_LOGI(TAG, "OLED bitmap alternation: %s", enabled ? "on" : "off");
+        return;
+    }
+
+    if (strcmp(cmd, "oled alt on") == 0) {
+        oled_sh1106_set_bitmap_alternation_enabled(true);
+        ESP_LOGI(TAG, "OLED bitmap alternation: on");
+        return;
+    }
+
+    if (strcmp(cmd, "oled alt off") == 0) {
+        oled_sh1106_set_bitmap_alternation_enabled(false);
+        ESP_LOGI(TAG, "OLED bitmap alternation: off");
+        return;
+    }
+
+    if (strncmp(cmd, "oled bitmap ", 12) == 0) {
+        const char *name = cmd + 12;
+        esp_err_t err = oled_sh1106_select_bitmap(name);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "OLED bitmap selected: %s", oled_sh1106_get_selected_bitmap_name());
+        } else {
+            ESP_LOGW(TAG, "Unknown OLED bitmap '%s'. Available now: kirby", name);
+        }
+        return;
+    }
+
 #if CHIP_DEVICE_CONFIG_ENABLE_THREAD
     if (strcmp(cmd, "thdiag") == 0 || strcmp(cmd, "threaddiag") == 0) {
         log_thread_diagnostics_snapshot();
@@ -475,7 +512,7 @@ static void execute_serial_command(const char *cmd)
 
     if (strcmp(cmd, "help") == 0) {
         ESP_LOGI(TAG,
-                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, profile custom <offsetC>, thdiag, threaddiag, help");
+                 "serial commands: decom, decommission, factoryreset, reset, profile, profile v1, profile v2, profile custom <offsetC>, oled, oled alt toggle, oled alt on, oled alt off, oled bitmap <name>, thdiag, threaddiag, help");
         return;
     }
 

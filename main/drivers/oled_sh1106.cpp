@@ -57,14 +57,32 @@ static bool s_display_on = true;
 static bool s_display_forced_off_hours = false;
 static int8_t s_time_sync_state = -1; // -1 unknown, 0 unsynced, 1 synced
 static bool s_commissioning_active = true;
+static bool s_bitmap_alternation_enabled = CONFIG_WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT;
+static size_t s_selected_bitmap_index = 0;
 static int64_t s_runtime_cycle_start_us = -1;
 static char s_qr_code[128] = {0};
 static char s_manual_code[32] = {0};
-static constexpr int64_t kKirbyPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_KIRBY_SECONDS) * 1000LL * 1000LL;
+static constexpr int64_t kBitmapPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_KIRBY_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kSensorPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_SENSOR_SECONDS) * 1000LL * 1000LL;
-static constexpr int64_t kRuntimeCycleUs = kKirbyPhaseUs + kSensorPhaseUs;
+static constexpr int64_t kRuntimeCycleUs = kBitmapPhaseUs + kSensorPhaseUs;
 
 static uint8_t s_fb[kWidth * kPages];
+
+struct oled_bitmap_t {
+    const char *name;
+    int width;
+    int height;
+    const uint8_t *bits;
+    size_t len;
+};
+
+static const oled_bitmap_t kBitmapCatalog[] = {
+#if WALL_ENV_HAS_KIRBY
+    {"kirby", KIRBY_W, KIRBY_H, kirby_bits, sizeof(kirby_bits)},
+#endif
+};
+
+static constexpr size_t kBitmapCatalogCount = sizeof(kBitmapCatalog) / sizeof(kBitmapCatalog[0]);
 
 // 5x7 font, ASCII 0x20..0x7E. Public domain style table (common embedded font).
 static const uint8_t kFont5x7[] = {
@@ -759,19 +777,21 @@ static void fb_draw_bitmap_mono_lsb(int x, int y, int w, int h, const uint8_t *b
     }
 }
 
-static void draw_kirby_screen()
+static void draw_bitmap_screen()
 {
     fb_clear();
-#if WALL_ENV_HAS_KIRBY
-    const size_t kirby_len = sizeof(kirby_bits);
-    constexpr size_t kirby_expected_len = static_cast<size_t>(((KIRBY_W + 7) / 8) * KIRBY_H);
-    (void) kirby_expected_len;
-    const int x0 = std::max(0, (kWidth - KIRBY_W) / 2);
-    const int y0 = std::max(0, (kHeight - KIRBY_H) / 2);
-    fb_draw_bitmap_mono_lsb(x0, y0, KIRBY_W, KIRBY_H, kirby_bits, kirby_len);
-#else
-    fb_draw_text(0, 24, "Missing kirby.h", 1);
-#endif
+    if (kBitmapCatalogCount == 0) {
+        fb_draw_text(0, 24, "No OLED bitmap", 1);
+        return;
+    }
+
+    if (s_selected_bitmap_index >= kBitmapCatalogCount) {
+        s_selected_bitmap_index = 0;
+    }
+    const oled_bitmap_t &bitmap = kBitmapCatalog[s_selected_bitmap_index];
+    const int x0 = std::max(0, (kWidth - bitmap.width) / 2);
+    const int y0 = std::max(0, (kHeight - bitmap.height) / 2);
+    fb_draw_bitmap_mono_lsb(x0, y0, bitmap.width, bitmap.height, bitmap.bits, bitmap.len);
 }
 
 static void oled_task(void *arg)
@@ -809,14 +829,19 @@ static void oled_task(void *arg)
                 draw_commissioning_screen();
             } else {
                 const int64_t now_us = esp_timer_get_time();
-                if (s_runtime_cycle_start_us < 0) {
-                    s_runtime_cycle_start_us = now_us;
-                }
-                const int64_t elapsed_us = (now_us - s_runtime_cycle_start_us) % kRuntimeCycleUs;
-                if (elapsed_us < kKirbyPhaseUs) {
-                    draw_kirby_screen();
-                } else {
+                if (!s_bitmap_alternation_enabled || kBitmapCatalogCount == 0) {
+                    s_runtime_cycle_start_us = -1;
                     draw_runtime_screen();
+                } else {
+                    if (s_runtime_cycle_start_us < 0) {
+                        s_runtime_cycle_start_us = now_us;
+                    }
+                    const int64_t elapsed_us = (now_us - s_runtime_cycle_start_us) % kRuntimeCycleUs;
+                    if (elapsed_us < kBitmapPhaseUs) {
+                        draw_bitmap_screen();
+                    } else {
+                        draw_runtime_screen();
+                    }
                 }
             }
             (void) flush_fb();
@@ -855,6 +880,48 @@ void oled_sh1106_set_commissioning_active(bool active)
     s_commissioning_active = active;
 }
 
+bool oled_sh1106_get_bitmap_alternation_enabled()
+{
+    return s_bitmap_alternation_enabled;
+}
+
+void oled_sh1106_set_bitmap_alternation_enabled(bool enabled)
+{
+    if (s_bitmap_alternation_enabled != enabled) {
+        s_runtime_cycle_start_us = -1;
+    }
+    s_bitmap_alternation_enabled = enabled;
+}
+
+bool oled_sh1106_toggle_bitmap_alternation()
+{
+    oled_sh1106_set_bitmap_alternation_enabled(!s_bitmap_alternation_enabled);
+    return s_bitmap_alternation_enabled;
+}
+
+const char *oled_sh1106_get_selected_bitmap_name()
+{
+    if (kBitmapCatalogCount == 0 || s_selected_bitmap_index >= kBitmapCatalogCount) {
+        return "none";
+    }
+    return kBitmapCatalog[s_selected_bitmap_index].name;
+}
+
+esp_err_t oled_sh1106_select_bitmap(const char *name)
+{
+    if (!name || name[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < kBitmapCatalogCount; ++i) {
+        if (strcmp(name, kBitmapCatalog[i].name) == 0) {
+            s_selected_bitmap_index = i;
+            s_runtime_cycle_start_us = -1;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
 #else
 
 esp_err_t oled_sh1106_start()
@@ -871,6 +938,32 @@ void oled_sh1106_set_commissioning_codes(const char *qr_code, const char *manual
 void oled_sh1106_set_commissioning_active(bool active)
 {
     (void) active;
+}
+
+bool oled_sh1106_get_bitmap_alternation_enabled()
+{
+    return false;
+}
+
+void oled_sh1106_set_bitmap_alternation_enabled(bool enabled)
+{
+    (void) enabled;
+}
+
+bool oled_sh1106_toggle_bitmap_alternation()
+{
+    return false;
+}
+
+const char *oled_sh1106_get_selected_bitmap_name()
+{
+    return "none";
+}
+
+esp_err_t oled_sh1106_select_bitmap(const char *name)
+{
+    (void) name;
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 #endif // CONFIG_WALL_ENV_OLED_ENABLE

@@ -23,3 +23,11 @@ void oled_sh1106_set_commissioning_codes(const char *qr_code, const char *manual
 
 // Toggle commissioning QR screen visibility.
 void oled_sh1106_set_commissioning_active(bool active);
+
+// Runtime bitmap alternation controls. The selected bitmap is shown during
+// the bitmap phase when alternation is enabled.
+bool oled_sh1106_get_bitmap_alternation_enabled();
+void oled_sh1106_set_bitmap_alternation_enabled(bool enabled);
+bool oled_sh1106_toggle_bitmap_alternation();
+const char *oled_sh1106_get_selected_bitmap_name();
+esp_err_t oled_sh1106_select_bitmap(const char *name);
