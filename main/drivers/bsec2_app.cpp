@@ -62,6 +62,8 @@ typedef struct {
     float co2_ppm = 0;
     float tvoc_ppm = 0;
     uint8_t iaq_accuracy = 0;
+    uint8_t co2_accuracy = 0;
+    uint8_t tvoc_accuracy = 0;
 } bsec_latest_t;
 
 static bsec_latest_t s_latest;
@@ -262,6 +264,8 @@ bool bsec2_app_get_latest(bsec2_app_latest_t *out_latest)
     out_latest->humidity_pct = latest.humidity_pct;
     out_latest->iaq = latest.static_iaq;
     out_latest->iaq_accuracy = latest.iaq_accuracy;
+    out_latest->co2_accuracy = latest.co2_accuracy;
+    out_latest->tvoc_accuracy = latest.tvoc_accuracy;
     out_latest->co2_ppm = latest.co2_ppm;
     out_latest->tvoc_ppm = latest.tvoc_ppm;
     return true;
@@ -395,6 +399,21 @@ static uint8_t map_iaq_to_enum(float iaq)
     return chip::to_underlying(AirQualityEnum::kExtremelyPoor);
 }
 
+const char *bsec2_app_air_quality_label(float iaq, uint8_t accuracy)
+{
+  using AirQualityEnum = AirQuality::AirQualityEnum;
+  if (accuracy < 1) return "Unknown";
+  switch (static_cast<AirQualityEnum>(map_iaq_to_enum(iaq))) {
+  case AirQualityEnum::kGood: return "Good";
+  case AirQualityEnum::kFair: return "Fair";
+  case AirQualityEnum::kModerate: return "Moderate";
+  case AirQualityEnum::kPoor: return "Poor";
+  case AirQualityEnum::kVeryPoor: return "VeryPoor";
+  case AirQualityEnum::kExtremelyPoor: return "Ext.Poor";
+  default: return "Unknown";
+  }
+}
+
 static void update_air_quality(float static_iaq, uint8_t accuracy)
 {
     s_last_iaq_accuracy = accuracy;
@@ -519,14 +538,16 @@ static void bsec_callback(const bme68xData data, const bsecOutputs outputs, cons
             break;
         case BSEC_OUTPUT_CO2_EQUIVALENT:
             portENTER_CRITICAL(&s_latest_mux);
-            s_latest.have_co2 = (out.accuracy >= 1);
+            s_latest.have_co2 = true;
+            s_latest.co2_accuracy = out.accuracy;
             s_latest.co2_ppm = out.signal;
             portEXIT_CRITICAL(&s_latest_mux);
             update_co2(out.signal, out.accuracy);
             break;
         case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT:
             portENTER_CRITICAL(&s_latest_mux);
-            s_latest.have_tvoc = (out.accuracy >= 1);
+            s_latest.have_tvoc = true;
+            s_latest.tvoc_accuracy = out.accuracy;
             s_latest.tvoc_ppm = out.signal;
             portEXIT_CRITICAL(&s_latest_mux);
             update_tvoc(out.signal, out.accuracy);

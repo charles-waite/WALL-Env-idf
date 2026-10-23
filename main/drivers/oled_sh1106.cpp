@@ -24,6 +24,7 @@
 #include <algorithm>
 
 #include <esp_timer.h>
+#include <esp_app_desc.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -35,6 +36,10 @@ static const char *TAG = "oled";
 
 #ifndef CONFIG_WALL_ENV_OLED_ENABLE
 #define CONFIG_WALL_ENV_OLED_ENABLE 0
+#endif
+
+#ifndef CONFIG_WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT
+#define CONFIG_WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT 0
 #endif
 
 #if CONFIG_WALL_ENV_OLED_ENABLE
@@ -52,7 +57,7 @@ static constexpr uint8_t kColOffset = static_cast<uint8_t>(CONFIG_WALL_ENV_OLED_
 
 static i2c_master_dev_handle_t s_dev = nullptr;
 static TaskHandle_t s_task = nullptr;
-static bool s_is_dimmed = false;
+static int s_current_contrast = -1;
 static bool s_display_on = true;
 static bool s_display_forced_off_hours = false;
 static int8_t s_time_sync_state = -1; // -1 unknown, 0 unsynced, 1 synced
@@ -65,6 +70,7 @@ static char s_manual_code[32] = {0};
 static constexpr int64_t kBitmapPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_KIRBY_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kSensorPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_SENSOR_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kRuntimeCycleUs = kBitmapPhaseUs + kSensorPhaseUs;
+static constexpr int64_t kCommissioningQrUs = 120LL * 1000LL * 1000LL;
 
 static uint8_t s_fb[kWidth * kPages];
 
@@ -203,7 +209,11 @@ static esp_err_t set_contrast(uint8_t contrast)
     if (err != ESP_OK) {
         return err;
     }
-    return send_cmd(contrast);
+    err = send_cmd(contrast);
+    if (err == ESP_OK) {
+        s_current_contrast = contrast;
+    }
+    return err;
 }
 
 static esp_err_t set_display_power(bool on)
@@ -519,6 +529,13 @@ static bool get_sunrise_sunset_minutes(const struct tm &local_tm, int tz_min, in
 
 static void maybe_update_day_night_contrast()
 {
+    // Never use wall-clock time to choose brightness for an unprovisioned device.
+    if (s_commissioning_active) {
+        if (s_current_contrast != 0x7F) {
+            (void) set_contrast(0x7F);
+        }
+        return;
+    }
     if (s_display_forced_off_hours) {
         return;
     }
@@ -562,12 +579,12 @@ static void maybe_update_day_night_contrast()
 
     const int now_min = local_tm.tm_hour * 60 + local_tm.tm_min;
     const bool should_dim = (now_min < sunrise_min) || (now_min >= sunset_min);
-    if (should_dim == s_is_dimmed) {
+    const uint8_t contrast = should_dim ? 0x00 : 0xFF;
+    if (s_current_contrast == contrast) {
         return;
     }
 
-    if (set_contrast(should_dim ? 0x00 : 0xFF) == ESP_OK) {
-        s_is_dimmed = should_dim;
+    if (set_contrast(contrast) == ESP_OK) {
         ESP_LOGI(TAG, "OLED contrast set to %u (%s mode, sunrise=%02d:%02d sunset=%02d:%02d)",
                  should_dim ? 0 : 255,
                  should_dim ? "night" : "day",
@@ -578,6 +595,13 @@ static void maybe_update_day_night_contrast()
 
 static void maybe_update_display_off_hours()
 {
+    // Standalone use must not inherit a scheduled screen-off after fabric removal.
+    if (s_commissioning_active) {
+        if (s_display_forced_off_hours && set_display_power(true) == ESP_OK) {
+            s_display_forced_off_hours = false;
+        }
+        return;
+    }
     // Quiet-hours schedule: OLED off from start hour until end hour (local time).
     static constexpr int kOffStartMin = CONFIG_WALL_ENV_OLED_QUIET_HOUR_START * 60;
     static constexpr int kOffEndMin = CONFIG_WALL_ENV_OLED_QUIET_HOUR_END * 60;
@@ -619,17 +643,45 @@ static void draw_splash()
 
     const char *line1 = "WALL-ENV Snsr";
     const char *line2 = "by Waite Design Labs";
+    char line3[36];
+    snprintf(line3, sizeof(line3), "v%s", esp_app_get_description()->version);
 
     const uint8_t *font1 = ArialMT_Plain_16;
     const uint8_t *font2 = ArialMT_Plain_10;
     const int h1 = tp_font_height(font1);
     const int h2 = tp_font_height(font2);
     const int spacing = 2;
-    const int total_h = h1 + spacing + h2;
+    const int total_h = h1 + spacing + h2 + spacing + h2;
     const int y0 = (kHeight - total_h) / 2;
 
     tp_draw_text_centered(y0, font1, line1);
     tp_draw_text_centered(y0 + h1 + spacing, font2, line2);
+    tp_draw_text_centered(y0 + h1 + spacing + h2 + spacing, font2, line3);
+}
+
+// Four numeric digits; VOC may also use one decimal point. Round before
+// choosing precision so rounding across a power of ten cannot widen the field.
+static void format_gas_reading(char *out, size_t size, bool available,
+                               float value, uint8_t accuracy, bool voc)
+{
+  if (!available || !std::isfinite(value) || value < 0) {
+    snprintf(out, size, "~");
+    return;
+  }
+  const char *prefix = accuracy < 2 ? "~" : "";
+  int decimals = 0;
+  if (voc) {
+    if (value < 9.9995f) decimals = 3;
+    else if (value < 99.995f) decimals = 2;
+    else if (value < 999.95f) decimals = 1;
+  }
+  const float scale = decimals == 3 ? 1000.0f : decimals == 2 ? 100.0f : decimals == 1 ? 10.0f : 1.0f;
+  const float rounded = std::round(value * scale) / scale;
+  if (rounded > 9999) {
+    snprintf(out, size, "%sHI", prefix);
+  } else {
+    snprintf(out, size, "%s%.*f", prefix, decimals, rounded);
+  }
 }
 
 static void draw_runtime_screen()
@@ -646,54 +698,61 @@ static void draw_runtime_screen()
 
     time_t now = time(nullptr);
     struct tm local_tm = {};
-    bool have_time = false;
-    if (now > 0 && localtime_r(&now, &local_tm)) {
-        have_time = (local_tm.tm_year >= (2024 - 1900));
-    }
+    const bool have_time = now > 0 && localtime_r(&now, &local_tm) &&
+                           local_tm.tm_year >= (2024 - 1900);
 
-    static const char *kWeekday[] = {"Sun", "Mon", "Tue", "Weds", "Thu", "Fri", "Sat"};
-    if (now > 0 && local_tm.tm_wday >= 0 && local_tm.tm_wday <= 6) {
+    static const char *kWeekday[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    if (s_commissioning_active) {
+        snprintf(line0, sizeof(line0), "Standalone Mode");
+    } else if (have_time && local_tm.tm_wday >= 0 && local_tm.tm_wday <= 6) {
         int hour12 = local_tm.tm_hour % 12;
         if (hour12 == 0) {
             hour12 = 12;
         }
         const char *ampm = (local_tm.tm_hour >= 12) ? "PM" : "AM";
-        if (have_time) {
-            snprintf(line0, sizeof(line0), "%s %d:%02d%s %d/%d/%02d",
-                     kWeekday[local_tm.tm_wday], hour12, local_tm.tm_min, ampm,
-                     local_tm.tm_mon + 1, local_tm.tm_mday, (local_tm.tm_year + 1900) % 100);
-        } else {
-            snprintf(line0, sizeof(line0), "*%s %d:%02d%s %d/%d/%02d*",
-                     kWeekday[local_tm.tm_wday], hour12, local_tm.tm_min, ampm,
-                     local_tm.tm_mon + 1, local_tm.tm_mday, (local_tm.tm_year + 1900) % 100);
-        }
+        snprintf(line0, sizeof(line0), "%s %d:%02d%s %d/%d/%02d",
+                 kWeekday[local_tm.tm_wday], hour12, local_tm.tm_min, ampm,
+                 local_tm.tm_mon + 1, local_tm.tm_mday, (local_tm.tm_year + 1900) % 100);
     } else {
-        snprintf(line0, sizeof(line0), "*Time not synced*");
+        snprintf(line0, sizeof(line0), "Time not synced");
     }
 
-    if (latest.have_temp && latest.have_humidity) {
-        const float temp_f = (latest.temp_c * 9.0f / 5.0f) + 32.0f;
-        snprintf(line1, sizeof(line1), "T %.1fF  RH %.1f%%", temp_f, latest.humidity_pct);
+    char temperature[12] = "--";
+    char humidity[12] = "--";
+    if (latest.have_temp) {
+        snprintf(temperature, sizeof(temperature), "%.0f", latest.temp_c * 9.0f / 5.0f + 32.0f);
+    }
+    if (latest.have_humidity) {
+        snprintf(humidity, sizeof(humidity), "%.0f", latest.humidity_pct);
+    }
+    // Leave a character cell for a custom raised degree dot (ASCII has no degree glyph).
+    snprintf(line1, sizeof(line1), "T:%s F  H:%s%%", temperature, humidity);
+    const char *air_quality = latest.have_iaq
+                                 ? bsec2_app_air_quality_label(latest.iaq, latest.iaq_accuracy)
+                                 : "Unknown";
+    if (strcmp(air_quality, "Unknown") == 0) {
+        const int dots = 1 + static_cast<int>((esp_timer_get_time() / 1000000LL) % 3);
+        snprintf(line2, sizeof(line2), "Calibrating Sensor%.*s", dots, "...");
     } else {
-        snprintf(line1, sizeof(line1), "T --.-F  RH --.-%%");
+        snprintf(line2, sizeof(line2), "AirQuality:%s", air_quality);
     }
 
-    if (latest.have_iaq) {
-        snprintf(line2, sizeof(line2), "IAQ %.0f (acc %u)", latest.iaq, latest.iaq_accuracy);
-    } else {
-        snprintf(line2, sizeof(line2), "IAQ --- (acc -)");
-    }
-
-    if (latest.have_co2) {
-        snprintf(line3, sizeof(line3), "CO2 %.0f ppm", latest.co2_ppm);
-    } else {
-        snprintf(line3, sizeof(line3), "CO2 --- ppm");
-    }
+    char co2[8];
+    char voc[8];
+    format_gas_reading(co2, sizeof(co2), latest.have_co2, latest.co2_ppm, latest.co2_accuracy, false);
+    format_gas_reading(voc, sizeof(voc), latest.have_tvoc, latest.tvoc_ppm, latest.tvoc_accuracy, true);
+    snprintf(line3, sizeof(line3), "CO2:%s VOC:%s", co2, voc);
 
     fb_draw_text(0, 0, line0, 1);
-    fb_draw_text(0, 16, line1, 1);
-    fb_draw_text(0, 32, line2, 1);
-    fb_draw_text(0, 48, line3, 1);
+    for (int x = 0; x < kWidth; ++x) fb_set_pixel(x, 10, true);
+    fb_draw_text(0, 17, line1, 1);
+    const int degree_x = (2 + static_cast<int>(strlen(temperature))) * 6 + 1;
+    fb_set_pixel(degree_x, 17, true);
+    fb_set_pixel(degree_x + 1, 17, true);
+    fb_set_pixel(degree_x, 18, true);
+    fb_set_pixel(degree_x + 1, 18, true);
+    fb_draw_text(0, 34, line2, 1);
+    fb_draw_text(0, 51, line3, 1);
 }
 
 static bool try_build_qr(QRCode *qr, uint8_t *buffer, size_t buffer_len, const char *text)
@@ -820,15 +879,29 @@ static void oled_task(void *arg)
     setenv("TZ", "PST8PDT,M3.2.0/2,M11.1.0/2", 1);
     tzset();
 
+    // This timer controls only the QR page, not the Matter commissioning window.
+    int64_t uncommissioned_since_us = -1;
     while (true) {
+        const int64_t now_us = esp_timer_get_time();
+        if (s_commissioning_active) {
+            if (uncommissioned_since_us < 0) {
+                uncommissioned_since_us = now_us;
+            }
+        } else {
+            uncommissioned_since_us = -1;
+        }
         maybe_update_display_off_hours();
         maybe_update_day_night_contrast();
         if (s_display_on) {
             if (s_commissioning_active) {
                 s_runtime_cycle_start_us = -1;
-                draw_commissioning_screen();
+                if (now_us - uncommissioned_since_us < kCommissioningQrUs) {
+                    draw_commissioning_screen();
+                } else {
+                    // Standalone mode always shows readings, even if rotation is enabled.
+                    draw_runtime_screen();
+                }
             } else {
-                const int64_t now_us = esp_timer_get_time();
                 if (!s_bitmap_alternation_enabled || kBitmapCatalogCount == 0) {
                     s_runtime_cycle_start_us = -1;
                     draw_runtime_screen();

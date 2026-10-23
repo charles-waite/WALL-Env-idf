@@ -101,7 +101,7 @@ menu "Example Configuration"
     config WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT
         bool "Enable OLED bitmap alternation by default"
         depends on WALL_ENV_OLED_ENABLE
-        default y
+        default n
         help
             Start the runtime OLED UI by alternating the selected bitmap with
             sensor data. Disable this to boot directly to the sensor data screen;
