@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
-set(PROJECT_VER "1.4.0")
-set(PROJECT_VER_NUMBER 10400)
+set(PROJECT_VER "1.4.1")
+set(PROJECT_VER_NUMBER 10401)
 
 # This project is a Thread-only sensor (BLE commissioning + Thread transport).
 # Exclude esp-matter's RainMaker integration to avoid pulling in Wi-Fi/cloud stack pieces.

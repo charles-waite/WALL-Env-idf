@@ -11,7 +11,7 @@ This repository is a rewrite of the earlier [Arduino/ESP-IDF WALL-Env firmware](
 
 WALL-Env measures indoor environmental conditions using a Bosch BME680 with Bosch's BSEC2 library calculating accurate sensor data. The device publishes temperature, relative humidity, air quality, CO2 equivalent, and TVOC through Matter over Thread.
 
-Optional support for a 1.3" SH1106 OLED connected via I2C shows commissioning and local status. When the device is uncommissioned, the OLED displays the Matter QR code for two minutes after the boot splash, then shows standalone sensor readings without a clock or date. No controller or network is required for local readings.
+Optional support for a 1.3" SH1106 OLED connected via I2C shows commissioning and local status. When the device is uncommissioned, the OLED displays the Matter QR code for 60 seconds after the boot splash, then shows standalone sensor readings without a clock or date. No controller or network is required for local readings.
 
 The firmware is Thread-only. BLE is used for Matter commissioning using an iPhone or iPad using Apple Home or the Home Assistant app. Sensor data and communication runs over Thread.
 
@@ -159,7 +159,7 @@ The active runtime sensor endpoint layout is:
 
 ZAP artifacts live in `wall_env.zap` and `main/zap-generated/`. Runtime code still creates the sensor endpoints explicitly where that has produced the best controller behavior, especially in Apple Home and Home Assistant.
 
-The firmware prints onboarding QR and manual pairing codes on every boot. If an OLED is present and the device is uncommissioned, the QR code is shown for two minutes after the splash. This display timeout does not change the Matter commissioning window; rebooting an uncommissioned device gives another two-minute QR display opportunity.
+The firmware prints onboarding QR and manual pairing codes on every boot. If an OLED is present and the device is uncommissioned, the QR code is shown for 60 seconds after the splash. This display timeout does not change the Matter commissioning window; rebooting an uncommissioned device gives another 60-second QR display opportunity.
 
 
 
@@ -170,7 +170,7 @@ Matter Time Synchronization is enabled and will allow the device to set an accur
 OLED behavior:
 
 - Boot splash for `CONFIG_WALL_ENV_OLED_SPLASH_MS` milliseconds, with a centered third line showing the built firmware version as `vX.Y.Z`.
-- While uncommissioned: QR-only screen for 120 seconds after the splash, then continuous standalone sensor data without time/date or bitmap rotation. Completing commissioning switches immediately to the commissioned data page; removing the last fabric starts a fresh QR interval.
+- While uncommissioned: QR-only screen for 60 seconds after the splash, then continuous standalone sensor data without time/date or bitmap rotation. Completing commissioning switches immediately to the commissioned data page; removing the last fabric starts a fresh QR interval.
 - After commissioning, sensor data with time and date is displayed continuously by default.
 - Optional Kirby/bitmap rotation is controlled by `CONFIG_WALL_ENV_OLED_BITMAP_ALTERNATE_DEFAULT` (default off) under Example Configuration. When enabled, the display alternates 15 seconds of bitmap with 15 seconds of sensor data; the durations remain configurable. The artwork and rotation code are retained, and `oled alt on` / `oled alt off` can change rotation for the current boot.
 - Both modes share four rows: a status/time header and divider, whole-degree temperature in F with a raised degree dot and whole-percent humidity, air-quality category, and compact `CO2` / `VOC` readings. The category row uses `AirQuality:` with `Good`, `Fair`, `Moderate`, `Poor`, `VeryPoor`, or `Ext.Poor`; all category rows fit within 21 characters. Standalone uses `Standalone Mode` in the header; commissioned use retains date/time.

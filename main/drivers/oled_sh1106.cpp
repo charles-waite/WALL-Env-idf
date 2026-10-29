@@ -70,7 +70,7 @@ static char s_manual_code[32] = {0};
 static constexpr int64_t kBitmapPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_KIRBY_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kSensorPhaseUs = static_cast<int64_t>(CONFIG_WALL_ENV_OLED_SENSOR_SECONDS) * 1000LL * 1000LL;
 static constexpr int64_t kRuntimeCycleUs = kBitmapPhaseUs + kSensorPhaseUs;
-static constexpr int64_t kCommissioningQrUs = 120LL * 1000LL * 1000LL;
+static constexpr int64_t kCommissioningQrUs = 60LL * 1000LL * 1000LL;
 
 static uint8_t s_fb[kWidth * kPages];
 
